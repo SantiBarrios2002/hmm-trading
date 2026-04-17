@@ -18,6 +18,18 @@ def compute_log_returns(prices: pd.Series) -> pd.Series:
 
     References: Engineering utility
     """
+    non_positive = prices <= 0
+    if non_positive.any():
+        bad_positions = np.flatnonzero(non_positive.to_numpy())
+        if len(bad_positions) > 5:
+            shown = ", ".join(str(pos) for pos in bad_positions[:5])
+            location_hint = f"{shown}, ..."
+        else:
+            location_hint = ", ".join(str(pos) for pos in bad_positions)
+        raise ValueError(
+            "prices must be strictly positive to compute log returns; "
+            f"found {len(bad_positions)} non-positive value(s) at position(s): {location_hint}."
+        )
     return np.log(prices / prices.shift(1))
 
 
@@ -36,9 +48,9 @@ def resample_prices(
 
     References: Engineering utility
     """
-    indexed = frame.set_index(timestamp_column)
+    indexed = frame.set_index(timestamp_column).sort_index()
     agg: dict[str, str] = {price_column: "last"}
-    if "volume" in indexed.columns:
+    if "volume" in indexed.columns and price_column != "volume":
         agg["volume"] = "sum"
     resampled = indexed[list(agg.keys())].resample(freq).agg(agg).dropna(subset=[price_column])
     return resampled.reset_index()
@@ -64,7 +76,7 @@ def train_test_split_time(
     if len(frame) < 2:
         raise ValueError("frame must contain at least 2 rows for a chronological split.")
     split = int(len(frame) * (1.0 - test_fraction))
-    if split == 0 or split == len(frame):
+    if split == 0:
         raise ValueError(
             "test_fraction and frame length must yield non-empty train and test splits."
         )

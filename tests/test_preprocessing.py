@@ -44,6 +44,11 @@ def test_compute_log_returns_constant_prices_give_zero() -> None:
     assert returns.dropna().tolist() == pytest.approx([0.0, 0.0])
 
 
+def test_compute_log_returns_rejects_non_positive_prices() -> None:
+    with pytest.raises(ValueError, match="strictly positive"):
+        compute_log_returns(pd.Series([100.0, 0.0, 101.0]))
+
+
 # --- resample_prices ---
 
 
@@ -79,7 +84,8 @@ def test_resample_prices_drops_empty_bars() -> None:
         ["2024-01-02 09:30:00", "2024-01-05 09:30:00"],
     )
     result = resample_prices(frame, "1D")
-    assert len(result) == 2
+    timestamps = result["timestamp"].dt.strftime("%Y-%m-%d").tolist()
+    assert timestamps == ["2024-01-02", "2024-01-05"]
 
 
 def test_resample_prices_sums_volume_within_bar() -> None:
@@ -132,13 +138,10 @@ def test_train_test_split_combined_covers_all_rows() -> None:
 
 
 def test_train_test_split_invalid_fraction_raises() -> None:
-    frame = _make_frame([100.0], ["2024-01-01 09:30:00"])
-    with pytest.raises(ValueError):
-        train_test_split_time(frame, test_fraction=0.0)
-    with pytest.raises(ValueError):
-        train_test_split_time(frame, test_fraction=1.0)
-    with pytest.raises(ValueError):
-        train_test_split_time(frame, test_fraction=1.5)
+    frame = _make_frame([100.0, 101.0], ["2024-01-01 09:30:00", "2024-01-02 09:30:00"])
+    for invalid_fraction in (0.0, 1.0, 1.5, -0.1):
+        with pytest.raises(ValueError, match="test_fraction must be in"):
+            train_test_split_time(frame, test_fraction=invalid_fraction)
 
 
 def test_train_test_split_rejects_insufficient_rows() -> None:
