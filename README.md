@@ -37,7 +37,7 @@ Planned implementation areas:
 - [`README.md`](README.md): project overview and setup
 - [`pyproject.toml`](pyproject.toml): packaging and tool configuration
 - [`requirements.txt`](requirements.txt): runtime dependencies
-- [`requirements-dev.txt`](requirements-dev.txt): development dependencies (includes runtime)
+- [`requirements-dev.txt`](requirements-dev.txt): wrapper for editable install with `.[dev]`
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
 - [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
 - `src/hft_hmm/`: initial package scaffold
@@ -72,7 +72,7 @@ For development tools and test/lint dependencies, install:
 pip install -r requirements-dev.txt
 ```
 
-Alternatively, you can install development extras from [`pyproject.toml`](pyproject.toml):
+This wrapper delegates to [`pyproject.toml`](pyproject.toml), where development extras are the source of truth. You can run the equivalent command directly:
 
 ```bash
 pip install ".[dev]"

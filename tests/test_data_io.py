@@ -140,6 +140,29 @@ def test_validate_market_data_rejects_canonical_column_collisions() -> None:
         validate_market_data(raw, spec=MarketDataSpec(price_column="close"))
 
 
+def test_validate_market_data_rejects_cross_canonical_collision() -> None:
+    raw = pd.DataFrame(
+        {
+            "time": ["2024-01-02 09:30:00"],
+            "price": [100.0],
+            "timestamp": [123],
+        }
+    )
+
+    with pytest.raises(
+        MarketDataValidationError,
+        match="would collide during renaming: timestamp",
+    ):
+        validate_market_data(
+            raw,
+            spec=MarketDataSpec(
+                timestamp_column="time",
+                price_column="price",
+                volume_column="timestamp",
+            ),
+        )
+
+
 def test_load_yfinance_market_data_normalizes_history_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -181,5 +204,46 @@ def test_load_yfinance_market_data_normalizes_history_output(
     assert captured["end"] == "2024-01-04"
     assert captured["interval"] == "1d"
     assert captured["auto_adjust"] is True
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [100.0, 101.0]
+
+
+def test_load_yfinance_market_data_prefers_adj_close_when_auto_adjust_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_frame = pd.DataFrame(
+        {
+            "Close": [200.0, 201.0],
+            "Adj Close": [100.0, 101.0],
+            "Volume": [10, 20],
+        },
+        index=pd.to_datetime(["2024-01-02", "2024-01-03"], utc=True),
+    )
+    history_frame.index.name = "Date"
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(
+            self,
+            *,
+            start: str | None,
+            end: str | None,
+            interval: str,
+            auto_adjust: bool,
+        ) -> pd.DataFrame:
+            assert auto_adjust is False
+            return history_frame
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+
+    frame = load_yfinance_market_data(
+        "SPY",
+        start="2024-01-02",
+        end="2024-01-04",
+        auto_adjust=False,
+    )
+
     assert list(frame.columns) == ["timestamp", "price", "volume"]
     assert frame["price"].tolist() == [100.0, 101.0]

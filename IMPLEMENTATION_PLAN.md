@@ -165,7 +165,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate F — Walk-forward experiment
-**Covers:** Issues 11, 18
+**Covers:** Issues 11, 12
 
 ### Must pass
 - A rolling or walk-forward training loop exists.
@@ -188,7 +188,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate G — Side-information predictors
-**Covers:** Issues 12, 13, 14
+**Covers:** Issues 13, 14, 15
 
 ### Must pass
 - Volatility ratio feature is implemented and tested.
@@ -205,7 +205,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate H — IOHMM-style transition conditioning
-**Covers:** Issues 15, 16
+**Covers:** Issues 16, 17
 
 ### Must pass
 - The repo contains either:
@@ -226,7 +226,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate I — Figures and presentation support
-**Covers:** Issues 17, 20
+**Covers:** Issues 18, 20
 
 ### Must pass
 - Plotting functions run from scripts, not only notebooks.

@@ -56,15 +56,20 @@ def load_yfinance_market_data(
         raise MarketDataValidationError(f"No market data returned for symbol '{symbol}'.")
 
     frame = downloaded.reset_index()
-    renamed = frame.rename(
-        columns={
-            "Date": "timestamp",
-            "Datetime": "timestamp",
-            "Close": "price",
-            "Adj Close": "price",
-            "Volume": "volume",
-        }
-    )
+    rename_map: dict[str, str] = {
+        "Date": "timestamp",
+        "Datetime": "timestamp",
+        "Volume": "volume",
+    }
+
+    # Avoid duplicate "price" columns when both Close and Adj Close are present.
+    has_adj_close = "Adj Close" in frame.columns
+    if not auto_adjust and has_adj_close:
+        rename_map["Adj Close"] = "price"
+    else:
+        rename_map["Close"] = "price"
+
+    renamed = frame.rename(columns=rename_map)
     return validate_market_data(renamed, spec=spec)
 
 
@@ -83,10 +88,14 @@ def validate_market_data(
     if len(set(source_columns)) != len(source_columns):
         raise MarketDataValidationError("MarketDataSpec columns must be distinct.")
 
+    canonical_to_source = dict(zip(CANONICAL_COLUMNS, source_columns, strict=True))
     incoming_columns = set(frame.columns)
-    source_set = set(source_columns)
     canonical_set = set(CANONICAL_COLUMNS)
-    conflicting_canonical_columns = sorted((incoming_columns & canonical_set) - source_set)
+    conflicting_canonical_columns = sorted(
+        canonical
+        for canonical in incoming_columns & canonical_set
+        if canonical_to_source[canonical] != canonical
+    )
     if conflicting_canonical_columns:
         joined = ", ".join(conflicting_canonical_columns)
         raise MarketDataValidationError(
