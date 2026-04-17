@@ -75,7 +75,7 @@ pip install -r requirements-dev.txt
 This wrapper delegates to [`pyproject.toml`](pyproject.toml), where development extras are the source of truth. You can run the equivalent command directly:
 
 ```bash
-pip install ".[dev]"
+pip install -e ".[dev]"
 ```
 
 CI uses `pip install -e ".[dev]"` in the GitHub workflow so there is a single dependency source of truth in [`pyproject.toml`](pyproject.toml). The requirements files remain useful for explicit local runtime or dev installs.
