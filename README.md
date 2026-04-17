@@ -19,7 +19,9 @@ The repository currently contains:
 - project metadata and dependency definitions
 - implementation planning documents
 - issue breakdown for staged delivery
-- repository automation for linting and tests as code is added
+- a minimal `src/hft_hmm/` package scaffold
+- smoke tests that validate the package baseline
+- repository automation for linting and tests
 
 Planned implementation areas:
 - Gaussian HMM baseline for returns
@@ -37,6 +39,9 @@ Planned implementation areas:
 - [`requirements.txt`](requirements.txt): direct dependency list
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
 - [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
+- `src/hft_hmm/`: initial package scaffold
+- `tests/`: repository smoke tests
+- `docs/`, `notebooks/`, `scripts/`: reserved project directories
 
 ## Setup
 
@@ -84,7 +89,16 @@ black --check .
 mypy src
 ```
 
-The GitHub Actions workflow is intentionally tolerant while the codebase is still being scaffolded.
+The GitHub Actions workflow now enforces the baseline checks on every push and pull request.
+
+## Initial Package Scaffold
+
+The current package is intentionally small. It provides:
+- importable package structure under `src/hft_hmm/`
+- version metadata
+- a small project metadata helper used by tests and tooling
+
+This keeps the repository honest: CI already validates imports, formatting, linting, and test execution before the modeling code lands.
 
 ## Data Note
 
