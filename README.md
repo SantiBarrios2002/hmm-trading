@@ -1,49 +1,58 @@
-# Hidden Markov Models Applied to Intraday Momentum Trading
+# HMM Trading
 
-Academic implementation project for ASPTA based on:
+Public academic project for ASPTA focused on Hidden Markov Models for intraday momentum trading with side information.
+
+[![CI](https://github.com/SantiBarrios2002/hmm-trading/actions/workflows/ci.yml/badge.svg)](https://github.com/SantiBarrios2002/hmm-trading/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+## Overview
+
+This repository is a course project implementation inspired by:
 - Christensen, Turner, Godsill, *Hidden Markov Models Applied To Intraday Momentum Trading With Side Information*
-- ASPTA course project brief
+- the ASPTA project brief
 
-## Project goal
-This repository implements a clean, reviewable, academically grounded replication of the paper's main pipeline:
-1. define a Gaussian HMM for returns,
-2. learn model parameters,
-3. perform filtering / prediction,
-4. evaluate the resulting signal,
-5. extend the baseline with side information.
+The intent is a clean, reviewable, academically defensible replication pipeline, not a production trading system and not a claim of exact numerical reproduction of the paper.
 
-The goal is **understanding and defensible simulation**, not production trading and not exact numerical reproduction of the paper's Sharpe ratio.
+## Current Status
 
-## Scope
-### Included
-- Gaussian HMM baseline
+The repository currently contains:
+- project metadata and dependency definitions
+- implementation planning documents
+- issue breakdown for staged delivery
+- repository automation for linting and tests as code is added
+
+Planned implementation areas:
+- Gaussian HMM baseline for returns
 - EM / Baum-Welch training
-- model selection over number of hidden states
-- forward inference / filtering distribution
-- expected-return prediction from state probabilities
-- side-information features (volatility ratio, seasonality)
-- IOHMM-style transition conditioning as an explicitly labeled approximation
-- tests for every public function
+- filtering and one-step-ahead prediction
+- model selection over hidden-state counts
+- signal generation and evaluation
+- side-information features
+- explicitly labeled approximations where the paper is not replicated exactly
 
-### Explicitly not required in first milestone
-- full MCMC replication
-- bridge sampling for marginal likelihood
-- exact 1-minute ES futures replication
-- production-grade backtesting engine
+## Repository Contents
 
-## Repository rules
-1. Every public function must be tested.
-2. Every public function must cite the paper section / page / equation or be marked as an engineering approximation.
-3. Final logic lives in `src/`, not only in notebooks.
-4. Each issue is implemented on its own branch and merged through PR review.
-5. Every PR states what is paper-faithful and what is approximate.
+- [`README.md`](README.md): project overview and setup
+- [`pyproject.toml`](pyproject.toml): packaging and tool configuration
+- [`requirements.txt`](requirements.txt): direct dependency list
+- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
+- [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
 
-## Recommended environment
-- Python 3.11
-- dependencies in `requirements.txt`
-- version pin hint in `.python-version`
+## Setup
 
-## Install
+### Python version
+
+The project targets Python 3.11.
+
+If you use `pyenv`, a typical setup is:
+
+```bash
+pyenv install 3.11.9
+pyenv local 3.11.9
+```
+
+### Local environment
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -51,49 +60,23 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## About `.python-version`
-This file contains just the Python version string, for example:
-```text
-3.11
-```
-Tools such as `pyenv`, `mise`, and some editors read it automatically and select that Python version when you enter the repo. It does **not** install Python by itself. It is a hint for local tooling.
+If you want the development tooling as defined in [`pyproject.toml`](pyproject.toml), install:
 
-If you use `pyenv`, the typical flow is:
 ```bash
-pyenv install 3.11.9
-pyenv local 3.11.9
-```
-That creates or updates `.python-version` so the repo uses that interpreter.
-
-## Suggested structure
-```text
-src/hft_hmm/
-  data/
-  diagnostics/
-  features/
-  models/
-  backtest/
-  plots/
-  utils/
-tests/
-notebooks/
-scripts/
-docs/
+pip install ".[dev]"
 ```
 
-## Development workflow
-1. pick one issue from `GITHUB_ISSUES.md`
-2. create a branch
-3. implement only that milestone
-4. add tests
-5. open a PR with references and validation evidence
+## Development Standards
 
-Example:
-```bash
-git checkout -b feat/07-gaussian-hmm-baseline
-```
+- Public functions should be tested.
+- Paper-faithful logic and engineering approximations should be clearly separated.
+- Core implementation should live in `src/` rather than only in notebooks.
+- Each change should be reviewable in isolation.
 
-## Quality commands
+## Quality Checks
+
+When implementation files are present, the intended checks are:
+
 ```bash
 pytest -q
 ruff check .
@@ -101,20 +84,12 @@ black --check .
 mypy src
 ```
 
-## Minimal milestone order
-1. repo scaffold
-2. data loading and return preprocessing
-3. baseline Gaussian HMM
-4. model selection
-5. forward inference
-6. simple signal and evaluation
-7. side-information features
-8. IOHMM-style approximation
+The GitHub Actions workflow is intentionally tolerant while the codebase is still being scaffolded.
 
-## Notes for the report / presentation
-Always state:
-- dataset and frequency used
-- what differs from the paper
-- which routines come from libraries
-- which parts were implemented directly
-- what was validated through tests
+## Data Note
+
+The local archive `databento.zip` is intentionally excluded from version control because it exceeds GitHub's standard repository file size limits and should not be committed directly.
+
+## License
+
+This repository is licensed under the MIT License. See [`LICENSE`](LICENSE).

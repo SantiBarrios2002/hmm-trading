@@ -2,7 +2,6 @@
 .codex
 .env
 .env.*
-.python-version
 
 # Python caches and artifacts
 __pycache__/
