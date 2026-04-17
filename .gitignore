@@ -1,5 +1,6 @@
 # Local tooling
 .codex
+.claude
 .env
 .env.*
 
@@ -43,3 +44,4 @@ Thumbs.db
 
 # Local datasets
 databento.zip
+*.pdf
