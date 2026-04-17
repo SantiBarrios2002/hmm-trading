@@ -1,11 +1,17 @@
-# GitHub Issues Plan
+# GitHub Issues
 
-This file can be copied into GitHub issues almost verbatim. Each issue is intentionally PR-sized.
+This file defines the actual work items for the repository. It complements `IMPLEMENTATION_PLAN.md`.
+
+- `IMPLEMENTATION_PLAN.md` = acceptance gates / review checks
+- `GITHUB_ISSUES.md` = implementation tasks / branch plan
+
+Each issue below is intentionally PR-sized.
 
 ---
 
 ## Issue 01 — Repository scaffold and quality tooling
 **Branch:** `feat/01-repo-scaffold`
+**Gate:** A
 
 ### Goal
 Create the initial academic repo skeleton and enforce baseline quality rules.
@@ -17,44 +23,46 @@ Create the initial academic repo skeleton and enforce baseline quality rules.
 - add formatting and lint configuration
 - add placeholder `__init__.py` files
 
-### Acceptance criteria
-- package imports correctly
-- `pytest`, `ruff`, and `black --check` run successfully
-- README explains repo purpose and workflow
+### Deliverables
+- importable package
+- working lint/test commands
+- minimal CI-ready structure
 
-### References
-- project organization only
-- course brief on project realization and presentation
+### Acceptance notes
+See Gate A in `IMPLEMENTATION_PLAN.md`.
 
 ---
 
 ## Issue 02 — Data IO and dataset contract
 **Branch:** `feat/02-data-io`
+**Gate:** B
 
 ### Goal
 Define a reproducible interface for loading market data.
 
 ### Tasks
-- implement CSV loader and optional Yahoo Finance loader
+- implement CSV loader
+- optionally add Yahoo Finance loader
 - define canonical columns: timestamp, price, volume if available
-- create typed data contract for downstream modules
+- validate schema and dtypes
 - add sample fixture data for tests
 
-### Acceptance criteria
-- raw data loads into a pandas DataFrame with validated schema
-- tests cover missing columns and bad timestamps
+### Deliverables
+- `data/io.py`
+- fixture dataset for tests
+- schema validation tests
 
-### References
-- paper uses financial time series and return preprocessing
-- project-only utility
+### Acceptance notes
+See Gate B.
 
 ---
 
 ## Issue 03 — Return preprocessing and sampling frequency utilities
 **Branch:** `feat/03-return-preprocessing`
+**Gate:** B
 
 ### Goal
-Produce log returns and consistent sampling utilities.
+Produce clean log returns and frequency-aware preprocessing utilities.
 
 ### Tasks
 - implement log-return computation
@@ -62,17 +70,18 @@ Produce log returns and consistent sampling utilities.
 - implement NaN and duplicate timestamp handling
 - add train/test split helper preserving time order
 
-### Acceptance criteria
-- correct log-return values on synthetic data
-- edge-case tests for repeated timestamps and insufficient rows
+### Deliverables
+- `data/preprocessing.py`
+- synthetic-data tests for returns and resampling
 
-### References
-- paper Section 2.2 defines returns as log price differences
+### Acceptance notes
+See Gate B.
 
 ---
 
 ## Issue 04 — State grid and paper reference helpers
 **Branch:** `feat/04-state-grid-utils`
+**Gate:** B
 
 ### Goal
 Support paper-aligned terminology and explicit references in code.
@@ -80,22 +89,23 @@ Support paper-aligned terminology and explicit references in code.
 ### Tasks
 - create utilities for state labels and metadata
 - create helper for storing paper reference strings in docstrings or constants
-- define `paper-faithful` vs `engineering approximation` tags
+- define `paper-faithful`, `engineering approximation`, `evaluation layer` tags
 
-### Acceptance criteria
-- helper utilities imported by other modules
-- at least one test validates expected metadata structure
+### Deliverables
+- `core/references.py`
+- `core/state_metadata.py`
 
-### References
-- paper Section 2.2 and 2.3
+### Acceptance notes
+See Gate B.
 
 ---
 
 ## Issue 05 — Piecewise linear regression baseline
 **Branch:** `feat/05-plr-baseline`
+**Gate:** C
 
 ### Goal
-Implement the paper's naive initialization / baseline idea using segmented trends.
+Implement the paper's naive baseline idea using segmented trends.
 
 ### Tasks
 - implement simple piecewise linear regression baseline
@@ -103,18 +113,18 @@ Implement the paper's naive initialization / baseline idea using segmented trend
 - optionally compute Durbin-Watson diagnostic
 - expose outputs as baseline state summaries
 
-### Acceptance criteria
-- synthetic piecewise-trend signal is segmented sensibly
-- regression outputs are test-covered
+### Deliverables
+- `models/plr_baseline.py`
+- synthetic trend segmentation tests
 
-### References
-- paper Section 3.1 (PLR baseline)
-- status should be marked approximation unless segmentation is closely matched
+### Acceptance notes
+See Gate C.
 
 ---
 
 ## Issue 06 — Baseline Gaussian HMM wrapper
 **Branch:** `feat/06-gaussian-hmm-wrapper`
+**Gate:** C
 
 ### Goal
 Wrap `hmmlearn` cleanly so the model is easy to inspect and test.
@@ -125,87 +135,87 @@ Wrap `hmmlearn` cleanly so the model is easy to inspect and test.
 - add deterministic random state support
 - document which parts are delegated to `hmmlearn`
 
-### Acceptance criteria
-- model trains on synthetic Gaussian regime-switching data
-- learned parameter shapes are correct
-- unit tests cover fit and inference API
+### Deliverables
+- `models/gaussian_hmm.py`
+- synthetic regime-switching tests
 
-### References
-- paper Section 2.3 and Section 3.2
-- Baum-Welch / EM based learning
+### Acceptance notes
+See Gate C.
 
 ---
 
 ## Issue 07 — Model selection over number of hidden states
 **Branch:** `feat/07-model-selection-k`
+**Gate:** D
 
 ### Goal
-Compare candidate hidden-state counts and select K reproducibly.
+Compare candidate hidden-state counts and select `K` reproducibly.
 
 ### Tasks
-- implement loop over candidate K values
+- implement loop over candidate `K`
 - compute log-likelihood, AIC, BIC
 - return ranked summary table
 - add plotting helper for selection curves
 
-### Acceptance criteria
-- synthetic experiments favor the correct or near-correct K
-- tests validate AIC/BIC calculation logic
+### Deliverables
+- `experiments/model_selection.py`
+- tests for AIC/BIC logic
 
-### References
-- paper Section 2.3.4 and Section 3.2
+### Acceptance notes
+See Gate D.
 
 ---
 
 ## Issue 08 — Forward inference / filtering distribution
 **Branch:** `feat/08-forward-inference`
+**Gate:** D
 
 ### Goal
-Implement the forward recursion used for real-time filtering and expected return prediction.
+Implement the forward recursion used for filtering and expected return prediction.
 
 ### Tasks
-- implement normalized forward recursion in log-safe form where possible
+- implement normalized forward recursion
+- use log-safe computations where needed
 - compute filtering probabilities over states
-- expose expected return from state probabilities and state means
-- compare wrapper output with library posterior probabilities where appropriate
+- expose expected return from probabilities and state means
 
-### Acceptance criteria
-- probabilities are normalized at every step
-- tests cover simple two-state toy system with known behavior
+### Deliverables
+- `inference/forward_filter.py`
+- toy-system tests with normalization checks
 
-### References
-- paper Section 6 and Algorithm 4 style prediction logic
-- paper-faithful target
+### Acceptance notes
+See Gate D.
 
 ---
 
 ## Issue 09 — Signal generation and simple trading policy
 **Branch:** `feat/09-signal-policy`
+**Gate:** E
 
 ### Goal
-Turn expected returns into a basic long/short trading signal for evaluation.
+Turn expected returns into a basic long/short trading signal.
 
 ### Tasks
 - implement sign-based signal
-- optional thresholded signal
+- optionally implement thresholded signal
 - align predictions with next-step return realization correctly
 - document no-cost and cost-aware evaluation modes
 
-### Acceptance criteria
-- no look-ahead leakage
-- tests verify alignment between signal and realized return indices
+### Deliverables
+- `strategy/signals.py`
+- alignment and leakage tests
 
-### References
-- paper inference-to-decision logic
-- engineering evaluation layer
+### Acceptance notes
+See Gate E.
 
 ---
 
 ## Issue 10 — Evaluation metrics and backtest summaries
 **Branch:** `feat/10-backtest-metrics`
+**Gate:** E
 
 ### Goal
-Create reusable evaluation functions and presentation-ready summaries.
+Create reusable evaluation functions and report-ready summaries.
 
 ### Tasks
 - implement cumulative return
@@ -213,38 +223,60 @@ Create reusable evaluation functions and presentation-ready summaries.
 - implement drawdown and hit rate
 - generate compact summary DataFrame
 
-### Acceptance criteria
-- metrics validated on synthetic known examples
-- tests include zero-variance and empty-series edge cases
+### Deliverables
+- `evaluation/metrics.py`
+- metric edge-case tests
 
-### References
-- paper performance reporting sections
-- engineering evaluation layer
+### Acceptance notes
+See Gate E.
 
 ---
 
 ## Issue 11 — Rolling-window training experiment
 **Branch:** `feat/11-rolling-window`
+**Gate:** F
 
 ### Goal
-Reflect the paper's rolling retraining spirit in a reproducible experiment.
+Reflect the paper's rolling retraining setup in a reproducible experiment.
 
 ### Tasks
 - implement walk-forward training loop
 - support configurable window length and retrain frequency
 - log chosen parameters and outputs per window
 
-### Acceptance criteria
-- no future data leakage
-- integration test on small fixture dataset
+### Deliverables
+- `experiments/walk_forward.py`
+- small integration test with fixture data
 
-### References
-- paper Section 2.3 discusses rolling monthly estimation windows
+### Acceptance notes
+See Gate F.
 
 ---
 
-## Issue 12 — Volatility ratio feature
-**Branch:** `feat/12-volatility-ratio`
+## Issue 12 — Experiment configuration and reproducibility log
+**Branch:** `feat/12-experiment-config`
+**Gate:** F
+
+### Goal
+Make experiment settings explicit and saved.
+
+### Tasks
+- create typed configuration object or YAML-based config
+- log dataset, frequency, K, seed, windows, feature params
+- save experiment summaries to disk
+
+### Deliverables
+- `config/experiment_config.py`
+- config validation tests
+
+### Acceptance notes
+See Gate F.
+
+---
+
+## Issue 13 — Volatility ratio feature
+**Branch:** `feat/13-volatility-ratio`
+**Gate:** G
 
 ### Goal
 Implement the first side-information predictor.
@@ -255,17 +287,18 @@ Implement the first side-information predictor.
 - parameterize decay and window settings
 - add visualization helper
 
-### Acceptance criteria
-- synthetic volatility changes behave as expected
-- tests validate monotonic intuition and output shape
+### Deliverables
+- `features/volatility_ratio.py`
+- feature tests
 
-### References
-- paper Section 4.2
+### Acceptance notes
+See Gate G.
 
 ---
 
-## Issue 13 — Intraday seasonality feature
-**Branch:** `feat/13-seasonality-feature`
+## Issue 14 — Intraday seasonality feature
+**Branch:** `feat/14-seasonality-feature`
+**Gate:** G
 
 ### Goal
 Implement the second side-information predictor.
@@ -275,17 +308,18 @@ Implement the second side-information predictor.
 - compute intraday seasonal buckets or normalized index
 - expose feature series for spline fitting
 
-### Acceptance criteria
-- feature construction works across different frequencies
-- tests validate index behavior on known timestamps
+### Deliverables
+- `features/seasonality.py`
+- feature construction tests
 
-### References
-- paper Section 4.3
+### Acceptance notes
+See Gate G.
 
 ---
 
-## Issue 14 — Spline-based predictor fitting
-**Branch:** `feat/14-spline-predictor`
+## Issue 15 — Spline-based predictor fitting
+**Branch:** `feat/15-spline-predictor`
+**Gate:** G
 
 ### Goal
 Fit spline relationships between side-information predictors and returns.
@@ -296,18 +330,18 @@ Fit spline relationships between side-information predictors and returns.
 - optionally force approximate zero-mean over support
 - create evaluation plot
 
-### Acceptance criteria
-- spline fit returns deterministic outputs for fixed config
-- tests cover fit/evaluate interface and shape
+### Deliverables
+- `features/splines.py`
+- fit/evaluate tests
 
-### References
-- paper Section 4.1 and Algorithm 2
-- likely engineering approximation in Python
+### Acceptance notes
+See Gate G.
 
 ---
 
-## Issue 15 — IOHMM-style transition conditioning approximation
-**Branch:** `feat/15-iohmm-approx`
+## Issue 16 — IOHMM-style transition conditioning approximation
+**Branch:** `feat/16-iohmm-approx`
+**Gate:** H
 
 ### Goal
 Approximate the paper's idea that transitions depend on side information.
@@ -318,21 +352,21 @@ Approximate the paper's idea that transitions depend on side information.
 - expose time-varying transition probabilities
 - document deviation from full IOHMM learning
 
-### Acceptance criteria
-- conditioned transitions vary sensibly with features
-- tests validate shapes, normalization, and deterministic behavior
+### Deliverables
+- `models/iohmm_approx.py`
+- normalization and deterministic tests
 
-### References
-- paper Section 5.1 and 5.2
-- explicitly mark as engineering approximation unless full IOHMM EM is implemented
+### Acceptance notes
+See Gate H.
 
 ---
 
-## Issue 16 — Integrated side-information experiment
-**Branch:** `feat/16-side-info-experiment`
+## Issue 17 — Integrated side-information experiment
+**Branch:** `feat/17-side-info-experiment`
+**Gate:** H
 
 ### Goal
-Compare baseline HMM against side-information-enhanced version.
+Compare baseline HMM against side-information-enhanced versions.
 
 ### Tasks
 - run baseline experiment
@@ -340,20 +374,21 @@ Compare baseline HMM against side-information-enhanced version.
 - run seasonality enhancement
 - summarize differences in metrics and plots
 
-### Acceptance criteria
-- one reproducible experiment script creates all summary artifacts
-- output saved to `docs/figures/` or similar
+### Deliverables
+- `scripts/run_side_info_comparison.py`
+- saved figures and summary outputs
 
-### References
-- paper Sections 4–7
+### Acceptance notes
+See Gate H.
 
 ---
 
-## Issue 17 — Visualization package for report-ready figures
-**Branch:** `feat/17-visualizations`
+## Issue 18 — Visualization package for report-ready figures
+**Branch:** `feat/18-visualizations`
+**Gate:** I
 
 ### Goal
-Standardize figures for the report and presentation.
+Standardize figures for report and presentation use.
 
 ### Tasks
 - hidden-state timeline plot
@@ -362,38 +397,18 @@ Standardize figures for the report and presentation.
 - side-information spline plot
 - cumulative PnL plot
 
-### Acceptance criteria
-- figures render from scripts without notebook-only code
-- smoke tests cover plotting functions
+### Deliverables
+- `visualization/plots.py`
+- smoke tests for plotting functions
 
-### References
-- figures throughout the paper
-- project presentation support
-
----
-
-## Issue 18 — Experiment configuration and reproducibility log
-**Branch:** `feat/18-experiment-config`
-
-### Goal
-Make experiment settings explicit and reportable.
-
-### Tasks
-- create typed configuration object or YAML-based config
-- log dataset, frequency, K, seed, windows, feature params
-- save experiment summaries to disk
-
-### Acceptance criteria
-- one run produces a saved machine-readable config and result summary
-- tests cover config parsing or validation
-
-### References
-- project reproducibility requirement
+### Acceptance notes
+See Gate I.
 
 ---
 
 ## Issue 19 — README academic usage example
 **Branch:** `docs/19-readme-usage`
+**Gate:** A
 
 ### Goal
 Add a minimal end-to-end usage example suitable for a reviewer.
@@ -404,28 +419,29 @@ Add a minimal end-to-end usage example suitable for a reviewer.
 - document one side-info run
 - mention which library routines are used and why
 
-### Acceptance criteria
-- another student could run the baseline from the README
+### Deliverables
+- updated `README.md`
 
-### References
-- project presentation and evaluation constraints
+### Acceptance notes
+See Gate A.
 
 ---
 
 ## Issue 20 — Presentation support material
 **Branch:** `docs/20-presentation-support`
+**Gate:** I
 
 ### Goal
-Prepare concise material for the preview and final presentation.
+Prepare concise material for preview and final presentation.
 
 ### Tasks
 - create `docs/paper_notes.md`
 - create `docs/experiment_log.md`
 - summarize faithful vs approximate components
-- draft 5-slide technical narrative
+- draft a short technical slide narrative
 
-### Acceptance criteria
-- enough material exists to build the oral presentation quickly
+### Deliverables
+- presentation support docs under `docs/`
 
-### References
-- ASPTA project preview and presentation requirements
+### Acceptance notes
+See Gate I.

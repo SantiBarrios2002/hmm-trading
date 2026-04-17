@@ -1,0 +1,3 @@
+# Dev dependencies are defined in pyproject.toml under [project.optional-dependencies].dev.
+# Install with this file using: pip install -r requirements-dev.txt
+-e .[dev]
