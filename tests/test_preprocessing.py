@@ -139,3 +139,15 @@ def test_train_test_split_invalid_fraction_raises() -> None:
         train_test_split_time(frame, test_fraction=1.0)
     with pytest.raises(ValueError):
         train_test_split_time(frame, test_fraction=1.5)
+
+
+def test_train_test_split_rejects_insufficient_rows() -> None:
+    frame = _make_frame([100.0], ["2024-01-01 09:30:00"])
+    with pytest.raises(ValueError, match="at least 2 rows"):
+        train_test_split_time(frame, test_fraction=0.5)
+
+
+def test_train_test_split_rejects_empty_partition() -> None:
+    frame = _make_frame([100.0, 101.0], ["2024-01-01 09:30:00", "2024-01-02 09:30:00"])
+    with pytest.raises(ValueError, match="non-empty train and test splits"):
+        train_test_split_time(frame, test_fraction=0.9)

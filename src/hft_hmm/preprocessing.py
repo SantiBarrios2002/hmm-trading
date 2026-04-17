@@ -54,13 +54,20 @@ def train_test_split_time(
     The test set always follows the training set in time, so no future data
     leaks into the training set.
 
-    Raises ``ValueError`` for ``test_fraction`` outside the open interval (0, 1).
+    Raises ``ValueError`` for ``test_fraction`` outside the open interval (0, 1),
+    or when the input is too short to produce non-empty train and test splits.
 
     References: Engineering utility
     """
     if not (0.0 < test_fraction < 1.0):
         raise ValueError(f"test_fraction must be in (0, 1), got {test_fraction!r}.")
+    if len(frame) < 2:
+        raise ValueError("frame must contain at least 2 rows for a chronological split.")
     split = int(len(frame) * (1.0 - test_fraction))
+    if split == 0 or split == len(frame):
+        raise ValueError(
+            "test_fraction and frame length must yield non-empty train and test splits."
+        )
     train = frame.iloc[:split].reset_index(drop=True)
     test = frame.iloc[split:].reset_index(drop=True)
     return train, test
