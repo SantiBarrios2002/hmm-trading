@@ -1,0 +1,7 @@
+.codex
+databento.zip
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.pyc
