@@ -33,6 +33,46 @@ def load_csv_market_data(path: str | Path, spec: MarketDataSpec | None = None) -
     return validate_market_data(frame, spec=spec)
 
 
+def load_databento_parquet(
+    path: str | Path,
+    *,
+    symbol: str | None = None,
+    spec: MarketDataSpec | None = None,
+) -> pd.DataFrame:
+    """Load a local Databento OHLCV parquet file into the canonical contract.
+
+    The Databento source schema is treated as fixed: ``ts_event`` becomes
+    ``timestamp``, ``close`` becomes ``price``, and ``volume`` is preserved when
+    present. If ``symbol`` is provided, rows are filtered before metadata columns
+    are dropped. The normalized output is validated through
+    ``validate_market_data`` so downstream consumers see the same contract as the
+    CSV and yfinance loaders.
+
+    References: Engineering utility
+    """
+
+    frame = pd.read_parquet(path)
+    if "ts_event" not in frame.columns and frame.index.name == "ts_event":
+        frame = frame.reset_index()
+
+    if symbol is not None:
+        if "symbol" not in frame.columns:
+            raise MarketDataValidationError(
+                "Symbol filter requested but Databento input does not contain a symbol column."
+            )
+        frame = frame.loc[frame["symbol"] == symbol].copy()
+        if frame.empty:
+            raise MarketDataValidationError(
+                f"No rows found for symbol '{symbol}' in Databento parquet input."
+            )
+
+    renamed = frame.rename(columns={"ts_event": "timestamp", "close": "price"}).drop(
+        columns=["rtype", "publisher_id", "instrument_id", "symbol"],
+        errors="ignore",
+    )
+    return validate_market_data(renamed, spec=spec)
+
+
 def load_yfinance_market_data(
     symbol: str,
     *,
