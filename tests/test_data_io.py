@@ -124,6 +124,36 @@ def test_validate_market_data_rejects_non_numeric_volume_when_provided() -> None
         validate_market_data(raw)
 
 
+def test_validate_market_data_drops_volume_when_it_is_entirely_missing() -> None:
+    raw = pd.DataFrame(
+        {
+            "timestamp": ["2024-01-02 09:30:00", "2024-01-02 09:35:00"],
+            "price": [100.0, 101.0],
+            "volume": [None, None],
+        }
+    )
+
+    frame = validate_market_data(raw)
+
+    assert list(frame.columns) == ["timestamp", "price"]
+
+
+def test_validate_market_data_rejects_mixed_numeric_and_missing_volume() -> None:
+    raw = pd.DataFrame(
+        {
+            "timestamp": ["2024-01-02 09:30:00", "2024-01-02 09:35:00"],
+            "price": [100.0, 101.0],
+            "volume": [10, None],
+        }
+    )
+
+    with pytest.raises(
+        MarketDataValidationError,
+        match="Volume column must contain numeric values when provided.",
+    ):
+        validate_market_data(raw)
+
+
 def test_validate_market_data_rejects_canonical_column_collisions() -> None:
     raw = pd.DataFrame(
         {

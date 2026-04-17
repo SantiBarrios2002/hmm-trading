@@ -1,6 +1,6 @@
 # Implementation Plan — Acceptance Checks
 
-This document is the repo's implementation contract. It is **not** a task list and it should not duplicate GitHub issues. Each section defines a gate that must be passed before the next milestone is considered complete.
+This document is the repo's implementation contract. It is **not** a task list and should not duplicate GitHub issues. Each section defines a gate that must be passed before the next milestone is considered complete.
 
 Use this file during PR review.
 Use `GITHUB_ISSUES.md` to create and track the actual work items.

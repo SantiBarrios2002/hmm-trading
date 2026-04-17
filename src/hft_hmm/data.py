@@ -42,7 +42,16 @@ def load_yfinance_market_data(
     auto_adjust: bool = True,
     spec: MarketDataSpec | None = None,
 ) -> pd.DataFrame:
-    """Fetch market data from Yahoo Finance and normalize the output schema."""
+    """Fetch market data from Yahoo Finance and normalize the output schema.
+
+    When ``start`` and ``end`` are both ``None``, ``yfinance.Ticker.history`` falls
+    back to ``period="1mo"``, so an unbounded call still returns roughly one month
+    of data. With ``auto_adjust=False`` and both ``Close`` and ``Adj Close`` present,
+    the adjusted series is mapped to the normalized ``price`` column; otherwise the
+    raw ``Close`` series is used. When a ``volume`` column is present, callers should
+    ensure it is numeric and pre-clean or drop rows with missing values before
+    normalization.
+    """
 
     import yfinance as yf
 
@@ -77,7 +86,15 @@ def validate_market_data(
     frame: pd.DataFrame,
     spec: MarketDataSpec | None = None,
 ) -> pd.DataFrame:
-    """Validate and normalize raw market data into canonical repository columns."""
+    """Validate and normalize raw market data into canonical repository columns.
+
+    The normalized DataFrame requires numeric ``price`` values and, when the
+    ``volume`` column is meaningfully provided, numeric ``volume`` values as well.
+    If the ``volume`` column exists but is entirely missing, it is treated as not
+    provided and dropped from the normalized DataFrame. Mixed numeric and missing
+    ``volume`` values raise ``MarketDataValidationError``; callers should pre-clean
+    or drop rows with missing ``volume`` entries before calling this function.
+    """
 
     resolved_spec = spec or MarketDataSpec()
     source_columns = [
@@ -133,10 +150,15 @@ def validate_market_data(
     normalized = renamed.loc[:, selected_columns].sort_values("timestamp").reset_index(drop=True)
 
     if "volume" in normalized.columns:
-        normalized["volume"] = pd.to_numeric(normalized["volume"], errors="coerce")
-        if normalized["volume"].isna().any():
+        if normalized["volume"].isna().all():
+            normalized = normalized.drop(columns="volume")
+            return normalized
+
+        numeric_volume = pd.to_numeric(normalized["volume"], errors="coerce")
+        if numeric_volume.isna().any():
             raise MarketDataValidationError(
                 "Volume column must contain numeric values when provided."
             )
+        normalized["volume"] = numeric_volume
 
     return normalized
