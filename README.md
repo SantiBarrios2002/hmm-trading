@@ -111,7 +111,7 @@ This keeps the repository honest: CI already validates imports, formatting, lint
 
 ## Data Note
 
-The local archive `databento.zip` is intentionally excluded from version control because it exceeds GitHub's standard repository file size limits and should not be committed directly.
+Raw datasets live under `data/` and are excluded from version control because they exceed GitHub's repository size limits. See [`data/README.md`](data/README.md) for the expected layout, schema, and acquisition instructions. Small fixtures used by the test suite live under `tests/fixtures/` instead.
 
 ## License
 

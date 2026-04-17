@@ -41,7 +41,9 @@ pip-wheel-metadata/
 .idea/
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Local datasets
-databento.zip
+data/*
+!data/README.md
 *.pdf
