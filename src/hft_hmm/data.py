@@ -9,7 +9,7 @@ from typing import Final
 import pandas as pd
 
 REQUIRED_COLUMNS: Final[tuple[str, str]] = ("timestamp", "price")
-OPTIONAL_COLUMNS: Final[tuple[str]] = ("volume",)
+OPTIONAL_COLUMNS: Final[tuple[str, ...]] = ("volume",)
 CANONICAL_COLUMNS: Final[tuple[str, ...]] = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
 
 
@@ -46,19 +46,25 @@ def load_yfinance_market_data(
 
     import yfinance as yf
 
-    downloaded = yf.download(
-        tickers=symbol,
+    downloaded = yf.Ticker(symbol).history(
         start=start,
         end=end,
         interval=interval,
         auto_adjust=auto_adjust,
-        progress=False,
     )
     if downloaded.empty:
         raise MarketDataValidationError(f"No market data returned for symbol '{symbol}'.")
 
     frame = downloaded.reset_index()
-    renamed = frame.rename(columns={"Date": "timestamp", "Datetime": "timestamp", "Close": "price"})
+    renamed = frame.rename(
+        columns={
+            "Date": "timestamp",
+            "Datetime": "timestamp",
+            "Close": "price",
+            "Adj Close": "price",
+            "Volume": "volume",
+        }
+    )
     return validate_market_data(renamed, spec=spec)
 
 
@@ -69,6 +75,24 @@ def validate_market_data(
     """Validate and normalize raw market data into canonical repository columns."""
 
     resolved_spec = spec or MarketDataSpec()
+    source_columns = [
+        resolved_spec.timestamp_column,
+        resolved_spec.price_column,
+        resolved_spec.volume_column,
+    ]
+    if len(set(source_columns)) != len(source_columns):
+        raise MarketDataValidationError("MarketDataSpec columns must be distinct.")
+
+    incoming_columns = set(frame.columns)
+    source_set = set(source_columns)
+    canonical_set = set(CANONICAL_COLUMNS)
+    conflicting_canonical_columns = sorted((incoming_columns & canonical_set) - source_set)
+    if conflicting_canonical_columns:
+        joined = ", ".join(conflicting_canonical_columns)
+        raise MarketDataValidationError(
+            "Input contains canonical columns that would collide during renaming: " f"{joined}"
+        )
+
     renamed = frame.rename(
         columns={
             resolved_spec.timestamp_column: "timestamp",
@@ -101,5 +125,9 @@ def validate_market_data(
 
     if "volume" in normalized.columns:
         normalized["volume"] = pd.to_numeric(normalized["volume"], errors="coerce")
+        if normalized["volume"].isna().any():
+            raise MarketDataValidationError(
+                "Volume column must contain numeric values when provided."
+            )
 
     return normalized

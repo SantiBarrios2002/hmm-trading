@@ -36,7 +36,8 @@ Planned implementation areas:
 
 - [`README.md`](README.md): project overview and setup
 - [`pyproject.toml`](pyproject.toml): packaging and tool configuration
-- [`requirements.txt`](requirements.txt): direct dependency list
+- [`requirements.txt`](requirements.txt): runtime dependencies
+- [`requirements-dev.txt`](requirements-dev.txt): development dependencies (includes runtime)
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
 - [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
 - `src/hft_hmm/`: initial package scaffold
@@ -65,11 +66,19 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-If you want the development tooling as defined in [`pyproject.toml`](pyproject.toml), install:
+For development tools and test/lint dependencies, install:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Alternatively, you can install development extras from [`pyproject.toml`](pyproject.toml):
 
 ```bash
 pip install ".[dev]"
 ```
+
+CI uses `pip install -e ".[dev]"` in the GitHub workflow so there is a single dependency source of truth in [`pyproject.toml`](pyproject.toml). The requirements files remain useful for explicit local runtime or dev installs.
 
 ## Development Standards
 
