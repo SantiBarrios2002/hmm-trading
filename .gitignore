@@ -1,7 +1,46 @@
+# Local tooling
 .codex
-databento.zip
+.env
+.env.*
+.python-version
+
+# Python caches and artifacts
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
 .venv/
 venv/
-*.pyc
+env/
+ENV/
+
+# Build outputs
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local datasets
+databento.zip
