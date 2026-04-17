@@ -52,6 +52,17 @@ The repo must support the course goal of simulating some results of the paper an
   - `docs/NN-short-name`
   - `fix/NN-short-name`
 
+### 2.5 Scope exclusions
+These parts of the original paper are intentionally out of scope for the
+coursework replication. They are listed here so the grader does not mistake
+their absence for oversight.
+
+- **MCMC parameter estimation.** The paper fits Θ by both Baum-Welch and Metropolis-Hastings. This repo uses only Baum-Welch.
+- **MCMC bridge sampling for model selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via MCMC bridge sampling. This repo uses only cross-validation plus AIC/BIC.
+- **Asynchronous IOHMM.** The paper sketches an asynchronous variant for mixed-frequency inputs. This repo implements only the synchronous IOHMM approximation.
+- **Multi-security / portfolio backtest.** Evaluation is single-security (ES or an equivalent proxy). No cross-asset construction.
+- **Production execution concerns.** No latency modeling, slippage beyond a flat cost-per-turnover, venue microstructure, or order-book effects.
+
 ---
 
 ## 3. Acceptance gates
@@ -84,11 +95,14 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate B — Data contract and preprocessing
-**Covers:** Issues 02, 03, 04
+**Covers:** Issues 02, 02b, 03, 04
 
 ### Must pass
 - Data loading accepts a documented schema.
 - Timestamp parsing is validated.
+- At least one CSV / yfinance loader and one databento parquet loader exist and both route through the same validation path.
+- The databento parquet loader maps `ts_event` → `timestamp`, `close` → `price`, and filters by `symbol` when requested.
+- The replication dataset decision (yfinance daily for development, databento 1-minute ES for paper-replication runs) is documented in the repo.
 - Log returns are computed correctly.
 - Resampling preserves time order and documents frequency assumptions.
 - Duplicate timestamps and missing values are handled explicitly.
@@ -98,6 +112,7 @@ A gate passes only when all listed conditions are satisfied.
 ### Evidence expected in PR review
 - unit tests on synthetic price data
 - tests for malformed input
+- parquet fixture + loader test exercising the databento path
 - one example showing daily and intraday preprocessing
 
 ---
@@ -134,11 +149,12 @@ A gate passes only when all listed conditions are satisfied.
 - AIC and BIC calculations are tested.
 - Forward filtering returns normalized state probabilities at every time step.
 - Expected return from filtering probabilities and state means is exposed as an API.
-- Numerical stability is addressed and documented.
+- The forward recursion runs in log-space with log-sum-exp stabilization and does not underflow on long sequences.
 
 ### Evidence expected in PR review
 - tests verifying normalization
 - tests for AIC/BIC formulas
+- a no-underflow test on a synthetic sequence of at least 5,000 steps
 - one toy two-state example with known behavior
 
 ---
@@ -152,15 +168,17 @@ A gate passes only when all listed conditions are satisfied.
 - No look-ahead leakage exists in the signal path.
 - Evaluation functions exist for at least:
   - cumulative return
-  - Sharpe ratio
+  - Sharpe ratio (reported in both pre-cost and post-cost form)
   - drawdown
   - hit rate
+- The cost model (basis points per turnover) is documented and post-cost equals pre-cost when cost = 0.
 - Metric edge cases are tested.
 
 ### Evidence expected in PR review
 - alignment tests
 - zero-variance metric test
-- example summary table from a small experiment
+- pre-cost vs post-cost parity test at cost = 0
+- example summary table from a small experiment, labeled pre- and post-cost
 
 ---
 
@@ -168,21 +186,21 @@ A gate passes only when all listed conditions are satisfied.
 **Covers:** Issues 11, 12
 
 ### Must pass
-- A rolling or walk-forward training loop exists.
-- Window size and retraining frequency are configurable.
-- Future data is never used during fitting.
-- Every experiment saves:
-  - dataset info
-  - frequency
-  - seed
-  - K
-  - feature settings
-  - metrics summary
-- Results can be reproduced from a saved configuration.
+- A walk-forward training loop exists with the default scheme: train on the most recent `H` days → forecast one step ahead over the subsequent `T` days → advance the window and retrain.
+- `H`, `T`, and retrain frequency are configurable; the default retrains once per forecast period.
+- Future data is never used during fitting, verified by an explicit boundary assertion inside the loop.
+- Each run produces a `runs/<run_id>/` directory containing:
+  - `config.yaml` (resolved, deterministic serialization)
+  - `metrics.json` (pre- and post-cost summary)
+  - `figures/` (any plots)
+  - `log.jsonl` (one JSON entry per window)
+- `run_id = sha256(resolved_config_yaml)[:12]` so identical configs map to identical artifact directories.
+- `scripts/repro.py <config.yaml>` re-executes a run end to end and the resulting metrics match bit-for-bit.
 
 ### Evidence expected in PR review
-- one integration test on a small fixture
-- saved config artifact example
+- integration test on a fixture covering at least two windows
+- saved config + run artifact example
+- round-trip reproducibility test via `scripts/repro.py`
 - explicit no-leakage review notes
 
 ---
@@ -208,20 +226,19 @@ A gate passes only when all listed conditions are satisfied.
 **Covers:** Issues 16, 17
 
 ### Must pass
-- The repo contains either:
-  1. a clearly labeled **approximate** transition-conditioning implementation, or
-  2. a clearly labeled **full** IOHMM implementation
-- Transition probabilities vary with side information and remain normalized.
+- The repo contains a clearly labeled **approximate** transition-conditioning implementation following the paper's spline-bucketed approach (discretize each spline into buckets using its roots as boundaries; train a separate transition matrix per bucket).
+- A softmax-conditioned variant may exist as an optional stretch for comparison; if present it is labeled as an engineering approximation rather than a paper-faithful route.
+- Transition probabilities vary with side information and remain normalized per row.
 - The experiment compares:
   - baseline HMM
   - volatility-enhanced version
   - seasonality-enhanced version
-- Deviations from the paper are explicitly documented.
+- Deviations from the paper — concatenation shortcut, finite bucket count, any softmax variant — are explicitly documented in the module docstring.
 
 ### Evidence expected in PR review
-- tests for shape and normalization
+- tests for shape and per-row normalization of every per-bucket transition matrix
 - one experiment script producing comparison outputs
-- written note stating whether the implementation is full IOHMM or approximation
+- written note naming the approximation route(s) implemented and listing deviations from the paper
 
 ---
 
