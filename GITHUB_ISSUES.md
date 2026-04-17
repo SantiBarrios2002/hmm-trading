@@ -57,6 +57,42 @@ See Gate B.
 
 ---
 
+## Issue 02b — Databento parquet loader
+**Branch:** `feat/02b-databento-loader`
+**Gate:** B
+
+### Goal
+Load local databento 1-minute OHLCV parquet files into the repository's
+canonical market-data contract so side-information experiments can run on the
+paper's exact contract (ES) at 1-minute frequency.
+
+### Tasks
+- add `pyarrow` to runtime dependencies in `pyproject.toml` and `requirements.txt`
+- implement `load_databento_parquet(path, *, symbol=None, spec=None)` in `src/hft_hmm/data.py` that:
+  - reads the parquet file via pandas/pyarrow
+  - promotes the `ts_event` UTC DatetimeIndex to a `timestamp` column
+  - maps `close` → `price` and preserves `volume`
+  - drops databento metadata columns (`rtype`, `publisher_id`, `instrument_id`, `symbol`)
+  - optionally filters by `symbol` value before dropping it (files may contain multiple continuous-contract rolls)
+  - routes through `validate_market_data` so the existing contract tests apply uniformly
+- export the new loader from `hft_hmm/__init__.py`
+- add a small parquet fixture (one or two days, single symbol) under `tests/fixtures/`, keeping it under ~200 KB
+- add unit tests covering: happy path, missing `close` / `ts_event`, symbol filter, and malformed metadata
+
+### Deliverables
+- `load_databento_parquet` in `src/hft_hmm/data.py`
+- `pyarrow` added to runtime deps
+- parquet fixture under `tests/fixtures/`
+- additions to `tests/test_data_io.py`
+
+### Acceptance notes
+See Gate B. The loader must produce a DataFrame indistinguishable from the
+CSV loader's output once run through `validate_market_data`, so downstream
+code does not need a source-specific branch. Large parquet files live under
+`data/databento/` and are not tracked in git.
+
+---
+
 ## Issue 03 — Return preprocessing and sampling frequency utilities
 **Branch:** `feat/03-return-preprocessing`
 **Gate:** B
@@ -133,11 +169,13 @@ Wrap `hmmlearn` cleanly so the model is easy to inspect and test.
 - implement fit / predict / predict_proba interface
 - expose learned means, variances, transition matrix, initial distribution
 - add deterministic random state support
-- document which parts are delegated to `hmmlearn`
+- support an `init_from_plr=True` option that seeds means, variances, and state sequence from Issue 05's PLR output, matching the paper's initialization strategy
+- document which parts are delegated to `hmmlearn` and which are engineering wrappers around it
 
 ### Deliverables
 - `models/gaussian_hmm.py`
 - synthetic regime-switching tests
+- a test that `init_from_plr=True` produces reproducible fits on a fixed fixture
 
 ### Acceptance notes
 See Gate C.
@@ -174,14 +212,15 @@ See Gate D.
 Implement the forward recursion used for filtering and expected return prediction.
 
 ### Tasks
-- implement normalized forward recursion
-- use log-safe computations where needed
-- compute filtering probabilities over states
-- expose expected return from probabilities and state means
+- implement the forward recursion in log-space using log-sum-exp stabilization
+- return filtering probabilities `p(m_t | Δy_{1:t})` normalized at every step
+- expose expected return `E[Δy_{t+1} | Δy_{1:t}]` from filtering probabilities and state means
+- add a no-underflow regression test on a synthetic sequence of at least 5,000 steps
 
 ### Deliverables
 - `inference/forward_filter.py`
 - toy-system tests with normalization checks
+- long-sequence stability test
 
 ### Acceptance notes
 See Gate D.
@@ -215,17 +254,21 @@ See Gate E.
 **Gate:** E
 
 ### Goal
-Create reusable evaluation functions and report-ready summaries.
+Create reusable evaluation functions and report-ready summaries, reported in
+both pre-cost and post-cost form so comparison to the paper's pre-cost
+Sharpe is honest.
 
 ### Tasks
 - implement cumulative return
-- implement Sharpe ratio
+- implement Sharpe ratio in both pre-cost and post-cost modes with an explicit cost model (basis points per turnover)
 - implement drawdown and hit rate
-- generate compact summary DataFrame
+- generate compact summary DataFrame that labels each row pre-cost or post-cost
+- document the cost model and default assumptions in the module docstring
 
 ### Deliverables
 - `evaluation/metrics.py`
-- metric edge-case tests
+- metric edge-case tests (zero-variance, constant signal, single-period)
+- a test that post-cost Sharpe equals pre-cost Sharpe when cost = 0
 
 ### Acceptance notes
 See Gate E.
@@ -237,16 +280,22 @@ See Gate E.
 **Gate:** F
 
 ### Goal
-Reflect the paper's rolling retraining setup in a reproducible experiment.
+Reflect the paper's retraining setup in a reproducible experiment. The
+paper's scheme is a fixed-length training window followed by a forecast
+period, so the default here matches that: train on the most recent `H` days,
+forecast one step ahead over the subsequent `T` days, then advance the
+window and retrain.
 
 ### Tasks
-- implement walk-forward training loop
-- support configurable window length and retrain frequency
-- log chosen parameters and outputs per window
+- implement a walk-forward loop with the default "train H days → forecast T days → advance" scheme
+- parameterize window length `H`, forecast horizon `T`, and retrain frequency (default: retrain once per forecast period)
+- assert at the boundary of every window that no timestamp in the training slice is ≥ the first forecast timestamp
+- log per-window: window index, train/test time ranges, chosen `K`, log-likelihood, and metrics summary
 
 ### Deliverables
 - `experiments/walk_forward.py`
-- small integration test with fixture data
+- small integration test with fixture data covering at least two windows
+- an explicit no-leakage test that fails if the loop accidentally trains on future data
 
 ### Acceptance notes
 See Gate F.
@@ -258,16 +307,25 @@ See Gate F.
 **Gate:** F
 
 ### Goal
-Make experiment settings explicit and saved.
+Make experiment settings explicit and saved. The reproducibility contract is
+that any run can be re-executed from its saved config alone.
 
 ### Tasks
-- create typed configuration object or YAML-based config
-- log dataset, frequency, K, seed, windows, feature params
-- save experiment summaries to disk
+- create a typed configuration object with YAML (de)serialization
+- cover dataset, frequency, `K`, seed, walk-forward windows, feature params, and cost model
+- define the run-artifact layout under `runs/<run_id>/`:
+  - `config.yaml` (resolved, deterministic serialization)
+  - `metrics.json` (summary metrics, pre- and post-cost)
+  - `figures/` (any plots produced)
+  - `log.jsonl` (per-window log entries, one JSON object per line)
+- `run_id = sha256(resolved_config_yaml)[:12]` so identical configs map to identical run ids
+- add `scripts/repro.py <config.yaml>` that loads a saved config and re-executes the run end to end
 
 ### Deliverables
 - `config/experiment_config.py`
+- `scripts/repro.py`
 - config validation tests
+- a round-trip test: run on fixture → re-run via `repro.py` → metrics match bit-for-bit
 
 ### Acceptance notes
 See Gate F.
@@ -301,16 +359,21 @@ See Gate G.
 **Gate:** G
 
 ### Goal
-Implement the second side-information predictor.
+Implement the second side-information predictor. The paper's seasonality
+spline is defined over Chicago local time (CME exchange TZ), so the feature
+must convert away from the loader's canonical UTC before bucketing.
 
 ### Tasks
-- map timestamps to time-of-day index
-- compute intraday seasonal buckets or normalized index
-- expose feature series for spline fitting
+- convert timestamps from UTC to an exchange-local timezone (default `America/Chicago` for ES; configurable for other venues)
+- map converted timestamps to a time-of-day index
+- compute intraday seasonal buckets or a normalized index suitable for spline input
+- expose the feature as a pd.Series aligned with the price series
+- add a test that a known 09:30 Chicago timestamp maps to the same bucket across daylight-saving transitions
 
 ### Deliverables
 - `features/seasonality.py`
 - feature construction tests
+- explicit TZ-conversion test (includes a DST boundary)
 
 ### Acceptance notes
 See Gate G.
@@ -345,16 +408,26 @@ See Gate G.
 
 ### Goal
 Approximate the paper's idea that transitions depend on side information.
+Two routes are offered: the paper's **spline-bucketed transition matrix** is
+the primary deliverable; a **softmax-conditioned** variant is an optional
+stretch for comparison.
 
-### Tasks
-- define transition model `P(m_t | m_{t-1}, x_t)` using logistic or softmax regression
-- train transition conditioner on inferred or decoded states
-- expose time-varying transition probabilities
-- document deviation from full IOHMM learning
+### Tasks (primary — bucketed-A route)
+- discretize each spline predictor into `R` buckets using the spline's roots as boundaries (paper uses `R = 5` for the two splines in Fig. 5)
+- align each side-information value `x_t` with the corresponding return and assign it to a bucket
+- train a separate transition matrix `A_r` per bucket via Baum-Welch on the concatenated per-bucket data
+- expose a time-varying transition probability lookup `A(x_t)` that selects the matrix for the current bucket
+- document the concatenation shortcut as an approximation to the paper's formulation
+
+### Tasks (optional stretch — softmax route)
+- implement `P(m_t | m_{t-1}, x_t)` as a softmax-conditioned model fitted to decoded or inferred states
+- compare against the bucketed-A route on a small fixture
 
 ### Deliverables
-- `models/iohmm_approx.py`
-- normalization and deterministic tests
+- `models/iohmm_approx.py` containing the bucketed-A implementation
+- normalization tests: every `A_r` row sums to 1 within tolerance
+- a deterministic fit test on a synthetic fixture
+- a short note in the module docstring describing deviations from the paper (concatenation, finite bucket count, optional softmax variant)
 
 ### Acceptance notes
 See Gate H.
