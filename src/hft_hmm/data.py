@@ -1,4 +1,9 @@
-"""Data loading and validation utilities for market time series."""
+"""Data loading and validation utilities for market time series.
+
+Engineering utility — provides the canonical ``timestamp`` / ``price`` /
+``volume`` contract used by every loader and downstream consumer. See
+``DATA_REFERENCE`` for the paper pointer that motivates the aggregation step.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,11 @@ from pathlib import Path
 from typing import Final
 
 import pandas as pd
+
+from hft_hmm.core.references import ENGINEERING_APPROXIMATION, PaperReference, reference
+
+__category__: Final[str] = ENGINEERING_APPROXIMATION
+DATA_REFERENCE: Final[PaperReference] = reference("§7", "1-minute ES aggregation")
 
 REQUIRED_COLUMNS: Final[tuple[str, str]] = ("timestamp", "price")
 OPTIONAL_COLUMNS: Final[tuple[str, ...]] = ("volume",)
