@@ -21,6 +21,12 @@ from hft_hmm.data import (
     load_yfinance_market_data,
     validate_market_data,
 )
+from hft_hmm.models import (
+    PLRBaselineResult,
+    PLRSegment,
+    PLRStateSummary,
+    fit_piecewise_linear_regression,
+)
 from hft_hmm.preprocessing import compute_log_returns, resample_prices, train_test_split_time
 from hft_hmm.project import PROJECT_NAME, ProjectInfo, get_project_info
 
@@ -33,11 +39,15 @@ __all__ = [
     "MarketDataSpec",
     "MarketDataValidationError",
     "PaperReference",
+    "PLRBaselineResult",
+    "PLRSegment",
+    "PLRStateSummary",
     "ProjectInfo",
     "StateGrid",
     "__version__",
     "compute_log_returns",
     "default_labels",
+    "fit_piecewise_linear_regression",
     "get_project_info",
     "linear_grid",
     "load_csv_market_data",
