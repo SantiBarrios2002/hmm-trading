@@ -24,6 +24,7 @@ review notes.
 from __future__ import annotations
 
 import math
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -67,6 +68,11 @@ class ModelSelectionResult:
     rows: tuple[ModelSelectionRow, ...]
     best_by_aic: int
     best_by_bic: int
+
+    @property
+    def any_non_converged(self) -> bool:
+        """Return whether any fitted candidate failed to converge."""
+        return any(not row.converged for row in self.rows)
 
     def __post_init__(self) -> None:
         if not self.rows:
@@ -145,6 +151,12 @@ def compare_state_counts(
             tol=tol,
         )
         result = wrapper.fit(observations)
+        if not result.converged:
+            warnings.warn(
+                f"GaussianHMMWrapper.fit did not converge for k={k} with random_state={random_state}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         n_parameters = count_gaussian_hmm_parameters(k)
         rows.append(
             ModelSelectionRow(
@@ -177,6 +189,8 @@ def _coerce_k_values(k_values: Iterable[int]) -> list[int]:
     if not materialized:
         raise ValueError("k_values must be non-empty.")
     for k in materialized:
+        if isinstance(k, (bool, np.bool_)):
+            raise TypeError(f"k_values entries must be int, got {type(k).__name__}.")
         if not isinstance(k, (int, np.integer)):
             raise TypeError(f"k_values entries must be int, got {type(k).__name__}.")
         if k < 2:

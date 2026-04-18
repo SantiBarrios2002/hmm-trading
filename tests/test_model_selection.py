@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import matplotlib
 import numpy as np
@@ -131,6 +132,12 @@ def test_compare_state_counts_rejects_non_integer_k():
         compare_state_counts(_two_regime_returns(seed=8), k_values=[2.5, 3])
 
 
+@pytest.mark.parametrize("bool_k", [True, False, np.bool_(True), np.bool_(False)])
+def test_compare_state_counts_rejects_boolean_k(bool_k):
+    with pytest.raises(TypeError, match="int"):
+        compare_state_counts(_two_regime_returns(seed=8), k_values=[bool_k, 3])
+
+
 def test_compare_state_counts_rejects_multidim_returns():
     returns = np.zeros((100, 2))
     with pytest.raises(ValueError, match="one-dimensional"):
@@ -164,6 +171,43 @@ def test_model_selection_result_rejects_unknown_best_k():
         ModelSelectionResult(rows=(row_a,), best_by_aic=5, best_by_bic=2)
 
 
+def test_model_selection_result_any_non_converged_property():
+    converged_rows = (
+        _make_row(k=2, converged=True),
+        _make_row(k=3, converged=True),
+    )
+    all_converged = ModelSelectionResult(rows=converged_rows, best_by_aic=2, best_by_bic=2)
+    assert all_converged.any_non_converged is False
+
+    mixed_rows = (
+        _make_row(k=2, converged=True),
+        _make_row(k=3, converged=False),
+    )
+    mixed = ModelSelectionResult(rows=mixed_rows, best_by_aic=2, best_by_bic=2)
+    assert mixed.any_non_converged is True
+
+
+def test_compare_state_counts_warns_for_non_converged_fits(monkeypatch):
+    class _FakeWrapper:
+        def __init__(self, n_states: int, *, random_state: int | None, n_iter: int, tol: float) -> None:
+            self.n_states = n_states
+            self.random_state = random_state
+
+        def fit(self, returns):
+            return SimpleNamespace(
+                log_likelihood=-100.0 - float(self.n_states),
+                converged=self.n_states != 3,
+            )
+
+    monkeypatch.setattr("hft_hmm.selection.model_selection.GaussianHMMWrapper", _FakeWrapper)
+
+    with pytest.warns(RuntimeWarning, match=r"did not converge for k=3 with random_state=42"):
+        result = compare_state_counts(_two_regime_returns(seed=11), k_values=[2, 3], random_state=42)
+
+    assert [row.converged for row in result.rows] == [True, False]
+    assert result.any_non_converged is True
+
+
 def test_plot_selection_curves_smoke():
     import matplotlib.pyplot as plt
 
@@ -181,7 +225,7 @@ def test_plot_selection_curves_smoke():
         plt.close(fig)
 
 
-def _make_row(*, k: int) -> ModelSelectionRow:
+def _make_row(*, k: int, converged: bool = True) -> ModelSelectionRow:
     n_parameters = count_gaussian_hmm_parameters(k)
     return ModelSelectionRow(
         k=k,
@@ -190,6 +234,6 @@ def _make_row(*, k: int) -> ModelSelectionRow:
         n_observations=1000,
         aic=aic(-100.0, n_parameters),
         bic=bic(-100.0, n_parameters, 1000),
-        converged=True,
+        converged=converged,
         random_state=None,
     )
