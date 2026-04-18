@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Final
+from typing import Final, cast
 
 PAPER_FAITHFUL: Final[str] = "paper-faithful"
 ENGINEERING_APPROXIMATION: Final[str] = "engineering-approximation"
@@ -67,4 +67,4 @@ def module_category(module: ModuleType) -> str | None:
             f"Module {module.__name__} declares unknown __category__ {category!r}; "
             f"expected one of {sorted(ALL_CATEGORIES)}."
         )
-    return category
+    return cast(str, category)
