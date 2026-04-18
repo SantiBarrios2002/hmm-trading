@@ -66,11 +66,12 @@ def load_databento_parquet(
                 f"No rows found for symbol '{symbol}' in Databento parquet input."
             )
 
-    renamed = frame.rename(columns={"ts_event": "timestamp", "close": "price"}).drop(
+    trimmed = frame.drop(
         columns=["rtype", "publisher_id", "instrument_id", "symbol"],
         errors="ignore",
     )
-    return validate_market_data(renamed, spec=spec)
+    source_spec = spec or MarketDataSpec(timestamp_column="ts_event", price_column="close")
+    return validate_market_data(trimmed, spec=source_spec)
 
 
 def load_yfinance_market_data(
@@ -105,21 +106,18 @@ def load_yfinance_market_data(
         raise MarketDataValidationError(f"No market data returned for symbol '{symbol}'.")
 
     frame = downloaded.reset_index()
-    rename_map: dict[str, str] = {
-        "Date": "timestamp",
-        "Datetime": "timestamp",
-        "Volume": "volume",
-    }
+    timestamp_column = "Date" if "Date" in frame.columns else "Datetime"
 
-    # Avoid duplicate "price" columns when both Close and Adj Close are present.
+    # Avoid duplicate price mapping when both Close and Adj Close are present.
     has_adj_close = "Adj Close" in frame.columns
-    if not auto_adjust and has_adj_close:
-        rename_map["Adj Close"] = "price"
-    else:
-        rename_map["Close"] = "price"
+    price_column = "Adj Close" if (not auto_adjust and has_adj_close) else "Close"
 
-    renamed = frame.rename(columns=rename_map)
-    return validate_market_data(renamed, spec=spec)
+    source_spec = spec or MarketDataSpec(
+        timestamp_column=timestamp_column,
+        price_column=price_column,
+        volume_column="Volume",
+    )
+    return validate_market_data(frame, spec=source_spec)
 
 
 def validate_market_data(

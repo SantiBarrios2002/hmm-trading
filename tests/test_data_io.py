@@ -171,6 +171,19 @@ def test_load_databento_parquet_ignores_malformed_metadata(tmp_path: Path) -> No
     assert result["price"].tolist() == [100.5]
 
 
+def test_load_databento_parquet_accepts_source_schema_spec(tmp_path: Path) -> None:
+    path = tmp_path / "source_spec.parquet"
+    _write_databento_parquet(path, _make_databento_frame())
+
+    frame = load_databento_parquet(
+        path,
+        spec=MarketDataSpec(timestamp_column="ts_event", price_column="close", volume_column="volume"),
+    )
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [4810.25, 4811.25]
+
+
 def test_validate_market_data_supports_custom_column_names() -> None:
     raw = pd.DataFrame(
         {
@@ -417,6 +430,48 @@ def test_load_yfinance_market_data_prefers_adj_close_when_auto_adjust_disabled(
         start="2024-01-02",
         end="2024-01-04",
         auto_adjust=False,
+    )
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [100.0, 101.0]
+
+
+def test_load_yfinance_market_data_accepts_source_schema_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_frame = pd.DataFrame(
+        {
+            "Close": [200.0, 201.0],
+            "Adj Close": [100.0, 101.0],
+            "Volume": [10, 20],
+        },
+        index=pd.to_datetime(["2024-01-02", "2024-01-03"], utc=True),
+    )
+    history_frame.index.name = "Date"
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(
+            self,
+            *,
+            start: str | None,
+            end: str | None,
+            interval: str,
+            auto_adjust: bool,
+        ) -> pd.DataFrame:
+            assert auto_adjust is False
+            return history_frame
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+
+    frame = load_yfinance_market_data(
+        "SPY",
+        start="2024-01-02",
+        end="2024-01-04",
+        auto_adjust=False,
+        spec=MarketDataSpec(timestamp_column="Date", price_column="Adj Close", volume_column="Volume"),
     )
 
     assert list(frame.columns) == ["timestamp", "price", "volume"]
