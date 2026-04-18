@@ -11,11 +11,43 @@ from hft_hmm.data import (
     MarketDataSpec,
     MarketDataValidationError,
     load_csv_market_data,
+    load_databento_parquet,
     load_yfinance_market_data,
     validate_market_data,
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def _write_databento_parquet(path: Path, frame: pd.DataFrame) -> None:
+    frame.to_parquet(path)
+
+
+def _make_databento_frame(*, symbols: list[str] | None = None) -> pd.DataFrame:
+    resolved_symbols = symbols or ["ES.c.0", "ES.c.0"]
+    closes = [4810.25 + index for index in range(len(resolved_symbols))]
+    volumes = [120 + 10 * index for index in range(len(resolved_symbols))]
+    timestamps = pd.date_range(
+        "2024-01-02 14:30:00+00:00",
+        periods=len(resolved_symbols),
+        freq="min",
+        tz="UTC",
+        name="ts_event",
+    )
+    return pd.DataFrame(
+        {
+            "rtype": [1] * len(resolved_symbols),
+            "publisher_id": [2] * len(resolved_symbols),
+            "instrument_id": list(range(101, 101 + len(resolved_symbols))),
+            "open": [close - 0.25 for close in closes],
+            "high": [close + 0.25 for close in closes],
+            "low": [close - 0.5 for close in closes],
+            "close": closes,
+            "volume": volumes,
+            "symbol": resolved_symbols,
+        },
+        index=timestamps,
+    )
 
 
 def test_load_csv_market_data_normalizes_fixture() -> None:
@@ -25,6 +57,135 @@ def test_load_csv_market_data_normalizes_fixture() -> None:
     assert str(frame["timestamp"].dtype).startswith("datetime64[")
     assert str(frame["timestamp"].dtype).endswith(", UTC]")
     assert frame["price"].tolist() == [100.0, 100.4, 100.1]
+
+
+def test_load_databento_parquet_normalizes_fixture() -> None:
+    frame = load_databento_parquet(FIXTURES_DIR / "sample_databento_ohlcv.parquet")
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert str(frame["timestamp"].dtype).startswith("datetime64[")
+    assert str(frame["timestamp"].dtype).endswith(", UTC]")
+    assert frame["price"].tolist() == [4810.25, 4811.25]
+    assert frame["volume"].tolist() == [120, 130]
+
+
+def test_load_databento_parquet_filters_by_symbol(tmp_path: Path) -> None:
+    path = tmp_path / "two_symbols.parquet"
+    _write_databento_parquet(path, _make_databento_frame(symbols=["ES.c.0", "NQ.c.0"]))
+
+    frame = load_databento_parquet(path, symbol="NQ.c.0")
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [4811.25]
+    assert frame["volume"].tolist() == [130]
+
+
+def test_load_databento_parquet_rejects_missing_close(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "rtype": [1],
+            "publisher_id": [2],
+            "instrument_id": [3],
+            "open": [100.0],
+            "high": [101.0],
+            "low": [99.0],
+            "volume": [10],
+            "symbol": ["ES.c.0"],
+        },
+        index=pd.DatetimeIndex(["2024-01-02 14:30:00+00:00"], name="ts_event"),
+    )
+    path = tmp_path / "missing_close.parquet"
+    _write_databento_parquet(path, frame)
+
+    with pytest.raises(MarketDataValidationError, match="Missing required columns: price"):
+        load_databento_parquet(path)
+
+
+def test_load_databento_parquet_rejects_missing_ts_event(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "close": [100.0],
+            "volume": [10],
+            "symbol": ["ES.c.0"],
+        }
+    )
+    path = tmp_path / "missing_ts_event.parquet"
+    _write_databento_parquet(path, frame)
+
+    with pytest.raises(MarketDataValidationError, match="Missing required columns: timestamp"):
+        load_databento_parquet(path)
+
+
+def test_load_databento_parquet_rejects_symbol_filter_without_symbol_column(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "close": [100.0],
+            "volume": [10],
+        },
+        index=pd.DatetimeIndex(["2024-01-02 14:30:00+00:00"], name="ts_event"),
+    )
+    path = tmp_path / "missing_symbol.parquet"
+    _write_databento_parquet(path, frame)
+
+    with pytest.raises(MarketDataValidationError, match="does not contain a symbol column"):
+        load_databento_parquet(path, symbol="ES.c.0")
+
+
+def test_load_databento_parquet_rejects_missing_symbol_match(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "close": [100.0],
+            "volume": [10],
+            "symbol": ["NQ.c.0"],
+        },
+        index=pd.DatetimeIndex(["2024-01-02 14:30:00+00:00"], name="ts_event"),
+    )
+    path = tmp_path / "missing_match.parquet"
+    _write_databento_parquet(path, frame)
+
+    with pytest.raises(MarketDataValidationError, match="No rows found for symbol 'ES.c.0'"):
+        load_databento_parquet(path, symbol="ES.c.0")
+
+
+def test_load_databento_parquet_ignores_malformed_metadata(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "rtype": ["bad"],
+            "publisher_id": ["not-an-int"],
+            "instrument_id": ["unknown"],
+            "open": [100.0],
+            "high": [101.0],
+            "low": [99.0],
+            "close": [100.5],
+            "volume": [10],
+            "symbol": ["ES.c.0"],
+        },
+        index=pd.DatetimeIndex(["2024-01-02 14:30:00+00:00"], name="ts_event"),
+    )
+    path = tmp_path / "malformed_metadata.parquet"
+    _write_databento_parquet(path, frame)
+
+    result = load_databento_parquet(path)
+
+    assert list(result.columns) == ["timestamp", "price", "volume"]
+    assert result["price"].tolist() == [100.5]
+
+
+def test_load_databento_parquet_accepts_source_schema_spec(tmp_path: Path) -> None:
+    path = tmp_path / "source_spec.parquet"
+    _write_databento_parquet(path, _make_databento_frame())
+
+    frame = load_databento_parquet(
+        path,
+        spec=MarketDataSpec(
+            timestamp_column="ts_event",
+            price_column="close",
+            volume_column="volume",
+        ),
+    )
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [4810.25, 4811.25]
 
 
 def test_validate_market_data_supports_custom_column_names() -> None:
@@ -273,6 +434,52 @@ def test_load_yfinance_market_data_prefers_adj_close_when_auto_adjust_disabled(
         start="2024-01-02",
         end="2024-01-04",
         auto_adjust=False,
+    )
+
+    assert list(frame.columns) == ["timestamp", "price", "volume"]
+    assert frame["price"].tolist() == [100.0, 101.0]
+
+
+def test_load_yfinance_market_data_accepts_source_schema_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_frame = pd.DataFrame(
+        {
+            "Close": [200.0, 201.0],
+            "Adj Close": [100.0, 101.0],
+            "Volume": [10, 20],
+        },
+        index=pd.to_datetime(["2024-01-02", "2024-01-03"], utc=True),
+    )
+    history_frame.index.name = "Date"
+
+    class FakeTicker:
+        def __init__(self, symbol: str) -> None:
+            self.symbol = symbol
+
+        def history(
+            self,
+            *,
+            start: str | None,
+            end: str | None,
+            interval: str,
+            auto_adjust: bool,
+        ) -> pd.DataFrame:
+            assert auto_adjust is False
+            return history_frame
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+
+    frame = load_yfinance_market_data(
+        "SPY",
+        start="2024-01-02",
+        end="2024-01-04",
+        auto_adjust=False,
+        spec=MarketDataSpec(
+            timestamp_column="Date",
+            price_column="Adj Close",
+            volume_column="Volume",
+        ),
     )
 
     assert list(frame.columns) == ["timestamp", "price", "volume"]

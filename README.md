@@ -113,6 +113,8 @@ This keeps the repository honest: CI already validates imports, formatting, lint
 
 Raw datasets live under `data/` and are excluded from version control because they exceed GitHub's repository size limits. See [`data/README.md`](data/README.md) for the expected layout, schema, and acquisition instructions. Small fixtures used by the test suite live under `tests/fixtures/` instead.
 
+The default development dataset is daily market data loaded through Yahoo Finance helpers, which keeps local iteration lightweight. Paper-replication runs target local Databento 1-minute ES parquet files under `data/databento/`, loaded through the repository's canonical `timestamp` / `price` / `volume` contract.
+
 ## License
 
 This repository is licensed under the MIT License. See [`LICENSE`](LICENSE).

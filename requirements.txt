@@ -4,5 +4,6 @@ pandas>=2.1
 matplotlib>=3.8
 scikit-learn>=1.4
 hmmlearn>=0.3.2
+pyarrow>=15.0
 statsmodels>=0.14
 yfinance>=0.2.38

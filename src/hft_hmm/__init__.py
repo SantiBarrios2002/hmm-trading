@@ -5,6 +5,7 @@ from hft_hmm.data import (
     MarketDataSpec,
     MarketDataValidationError,
     load_csv_market_data,
+    load_databento_parquet,
     load_yfinance_market_data,
     validate_market_data,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "compute_log_returns",
     "get_project_info",
     "load_csv_market_data",
+    "load_databento_parquet",
     "load_yfinance_market_data",
     "resample_prices",
     "train_test_split_time",
