@@ -123,6 +123,7 @@ def test_init_from_plr_produces_reproducible_fit():
     first = GaussianHMMWrapper(n_states=2).fit(returns, init_from_plr=plr)
     second = GaussianHMMWrapper(n_states=2).fit(returns, init_from_plr=plr)
     np.testing.assert_allclose(first.means, second.means)
+    np.testing.assert_allclose(first.variances, second.variances)
     np.testing.assert_allclose(first.transition_matrix, second.transition_matrix)
     np.testing.assert_allclose(first.initial_distribution, second.initial_distribution)
 

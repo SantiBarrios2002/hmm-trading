@@ -76,12 +76,33 @@ class GaussianHMMResult:
             raise ValueError(f"transition_matrix must have shape ({k}, {k}), got {transmat.shape}.")
         if startprob.shape != (k,):
             raise ValueError(f"initial_distribution must have shape ({k},), got {startprob.shape}.")
-        if np.any(variances < 0.0):
-            raise ValueError("variances must be non-negative.")
-        if not np.all(np.isclose(transmat.sum(axis=1), 1.0)):
+        state_grid_means = np.asarray(self.state_grid.means, dtype=float)
+        if state_grid_means.shape != (k,):
+            raise ValueError(
+                f"state_grid.means must have shape ({k},), got {state_grid_means.shape}."
+            )
+        if not np.all(np.isfinite(means)):
+            raise ValueError("means must contain only finite values.")
+        if not np.all(np.isfinite(variances)):
+            raise ValueError("variances must contain only finite values.")
+        if not np.all(variances > 0.0):
+            raise ValueError("variances must be strictly positive.")
+        if not np.all(np.isfinite(transmat)):
+            raise ValueError("transition_matrix must contain only finite values.")
+        if not np.all(transmat >= 0.0):
+            raise ValueError("transition_matrix entries must be non-negative.")
+        if not np.allclose(transmat.sum(axis=1), 1.0):
             raise ValueError("transition_matrix rows must sum to 1.")
+        if not np.all(np.isfinite(startprob)):
+            raise ValueError("initial_distribution must contain only finite values.")
+        if not np.all(startprob >= 0.0):
+            raise ValueError("initial_distribution entries must be non-negative.")
         if not np.isclose(startprob.sum(), 1.0):
             raise ValueError("initial_distribution must sum to 1.")
+        if not np.all(np.isfinite(state_grid_means)):
+            raise ValueError("state_grid.means must contain only finite values.")
+        if not np.allclose(means, state_grid_means):
+            raise ValueError("means must match state_grid.means.")
         if self.n_observations < 1:
             raise ValueError("n_observations must be positive.")
 
