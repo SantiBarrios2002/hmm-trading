@@ -6,8 +6,14 @@ support data ingestion and feature engineering pipelines.
 
 from __future__ import annotations
 
+from typing import Final
+
 import numpy as np
 import pandas as pd
+
+from hft_hmm.core.references import ENGINEERING_APPROXIMATION
+
+__category__: Final[str] = ENGINEERING_APPROXIMATION
 
 
 def compute_log_returns(prices: pd.Series) -> pd.Series:

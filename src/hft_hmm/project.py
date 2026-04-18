@@ -1,6 +1,11 @@
 """Project-level metadata helpers for scaffolding and tooling."""
 
 from dataclasses import dataclass
+from typing import Final
+
+from hft_hmm.core.references import ENGINEERING_APPROXIMATION
+
+__category__: Final[str] = ENGINEERING_APPROXIMATION
 
 PROJECT_NAME = "hft-hmm"
 
