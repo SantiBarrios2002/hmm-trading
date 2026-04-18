@@ -22,6 +22,8 @@ from hft_hmm.data import (
     validate_market_data,
 )
 from hft_hmm.models import (
+    GaussianHMMResult,
+    GaussianHMMWrapper,
     PLRBaselineResult,
     PLRSegment,
     PLRStateSummary,
@@ -36,6 +38,8 @@ __all__ = [
     "EVALUATION_LAYER",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
+    "GaussianHMMResult",
+    "GaussianHMMWrapper",
     "MarketDataSpec",
     "MarketDataValidationError",
     "PaperReference",
