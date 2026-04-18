@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Final, cast
 
+__category__ = "engineering-approximation"
+
 PAPER_FAITHFUL: Final[str] = "paper-faithful"
 ENGINEERING_APPROXIMATION: Final[str] = "engineering-approximation"
 EVALUATION_LAYER: Final[str] = "evaluation-layer"
@@ -62,6 +64,11 @@ def module_category(module: ModuleType) -> str | None:
     category = getattr(module, "__category__", None)
     if category is None:
         return None
+    if not isinstance(category, str):
+        raise ValueError(
+            f"Module {module.__name__} declares invalid __category__ {category!r}; "
+            "__category__ must be a string."
+        )
     if category not in ALL_CATEGORIES:
         raise ValueError(
             f"Module {module.__name__} declares unknown __category__ {category!r}; "

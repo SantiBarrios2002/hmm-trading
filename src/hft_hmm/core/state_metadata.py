@@ -24,14 +24,17 @@ class StateGrid:
     labels: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        arr = np.asarray(self.means, dtype=float).copy()
         if self.k < 2:
             raise ValueError(f"StateGrid requires k >= 2, got {self.k}.")
-        if self.means.shape != (self.k,):
-            raise ValueError(f"means must have shape ({self.k},), got {self.means.shape}.")
+        if arr.shape != (self.k,):
+            raise ValueError(f"means must have shape ({self.k},), got {arr.shape}.")
         if len(self.labels) != self.k:
             raise ValueError(f"labels must have length {self.k}, got {len(self.labels)}.")
         if len(set(self.labels)) != self.k:
             raise ValueError("labels must be unique.")
+        arr.setflags(write=False)
+        object.__setattr__(self, "means", arr)
 
     def label(self, index: int) -> str:
         """Return the label for state ``index``."""
@@ -72,11 +75,26 @@ def linear_grid(k: int, min_return: float, max_return: float) -> StateGrid:
     """
     if k < 2:
         raise ValueError(f"linear_grid requires k >= 2, got {k}.")
+    if not (np.isfinite(min_return) and np.isfinite(max_return)):
+        raise ValueError(
+            "linear_grid requires finite min_return and max_return; "
+            f"got k={k}, min_return={min_return}, max_return={max_return}."
+        )
     if not min_return < max_return:
         raise ValueError(
             f"min_return must be strictly less than max_return; "
             f"got min_return={min_return}, max_return={max_return}."
         )
     means = np.linspace(min_return, max_return, num=k)
+    if not np.all(np.isfinite(means)):
+        raise ValueError(
+            "linear_grid produced non-finite means; "
+            f"got k={k}, min_return={min_return}, max_return={max_return}, means={means!r}."
+        )
+    if not np.all(np.diff(means) > 0):
+        raise ValueError(
+            "linear_grid produced non-increasing means; "
+            f"got k={k}, min_return={min_return}, max_return={max_return}, means={means!r}."
+        )
     labels = default_labels(k)
     return StateGrid(k=k, means=means, labels=labels)

@@ -73,6 +73,19 @@ def test_state_grid_is_frozen():
         grid.k = 3  # type: ignore[misc]
 
 
+def test_state_grid_means_array_is_read_only():
+    grid = linear_grid(3, -0.01, 0.01)
+    with pytest.raises(ValueError):
+        grid.means[0] = 0.0
+
+
+def test_state_grid_means_defensive_copy_from_input_array():
+    means = np.array([-0.01, 0.0, 0.01], dtype=float)
+    grid = StateGrid(k=3, means=means, labels=("down", "flat", "up"))
+    means[0] = -1.0
+    assert grid.means[0] == pytest.approx(-0.01)
+
+
 def test_state_grid_label_out_of_range():
     grid = linear_grid(2, -0.01, 0.01)
     with pytest.raises(IndexError):

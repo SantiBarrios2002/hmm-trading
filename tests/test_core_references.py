@@ -79,6 +79,13 @@ def test_module_category_rejects_unknown_value():
         module_category(module)
 
 
+def test_module_category_rejects_non_string_value():
+    module = types.ModuleType("fake_module")
+    module.__category__ = []
+    with pytest.raises(ValueError, match="must be a string"):
+        module_category(module)
+
+
 def test_existing_modules_declare_valid_categories():
     from hft_hmm import data, preprocessing, project
 
