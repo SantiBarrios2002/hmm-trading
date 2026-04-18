@@ -167,11 +167,14 @@ def fit_piecewise_linear_regression(
 ) -> PLRBaselineResult:
     """Fit a deterministic piecewise linear regression baseline to ``series``.
 
-    The series is segmented chronologically using a greedy top-down split rule:
-    at each step, the current segment whose best admissible split yields the
-    largest reduction in total squared error is split next. Segment slopes and
-    residual variances are exposed both chronologically and in return-ordered
-    state space, so the result can seed later HMM initialization work.
+    The series is segmented chronologically via dynamic programming that
+    minimizes total squared error under the ``min_segment_length`` constraint.
+    The 2D DP tables ``cost`` and ``previous_start`` store optimal partial
+    solutions and allow exact backtracking of globally optimal segment
+    boundaries. Segment slopes and residual variances are exposed both
+    chronologically and in return-ordered state space, so the result can seed
+    later HMM initialization work. The DP routine runs in roughly
+    :math:`O(k * n^2)` time for ``k = n_segments`` and ``n = len(series)``.
 
     References: §3.1 PLR baseline (engineering approximation)
     """
@@ -180,9 +183,7 @@ def fit_piecewise_linear_regression(
     if n_segments < 2:
         raise ValueError(f"n_segments must be at least 2, got {n_segments}.")
     if min_segment_length < 2:
-        raise ValueError(
-            f"min_segment_length must be at least 2, got {min_segment_length}."
-        )
+        raise ValueError(f"min_segment_length must be at least 2, got {min_segment_length}.")
     if len(values) < n_segments * min_segment_length:
         raise ValueError(
             "series is too short for the requested segmentation; "
@@ -274,7 +275,7 @@ def fit_piecewise_linear_regression(
         end_idx = start_idx
     segment_ranges.reverse()
 
-    breakpoints = tuple(end_idx for _, end_idx in segment_ranges)
+    breakpoints = tuple(bp_end for _, bp_end in segment_ranges)
     slopes = np.array(
         [interval_fit(start_idx, end_idx).slope for start_idx, end_idx in segment_ranges],
         dtype=float,
@@ -353,6 +354,22 @@ def fit_piecewise_linear_regression(
 
 
 def _coerce_series(series: pd.Series | np.ndarray) -> np.ndarray:
+    """Coerce input values to a finite one-dimensional float array.
+
+    If ``series`` is a pandas ``Series`` with a ``DatetimeIndex``, the index
+    must be monotonic increasing to preserve chronological order for
+    segmentation.
+    """
+    if (
+        isinstance(series, pd.Series)
+        and isinstance(series.index, pd.DatetimeIndex)
+        and not series.index.is_monotonic_increasing
+    ):
+        raise ValueError(
+            "series DatetimeIndex must be monotonic increasing; "
+            "sort with series.sort_index() before calling fit_piecewise_linear_regression."
+        )
+
     values = np.asarray(series, dtype=float)
     if values.ndim != 1:
         raise ValueError(f"series must be one-dimensional, got shape {values.shape}.")

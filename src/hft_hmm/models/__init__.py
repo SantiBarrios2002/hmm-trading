@@ -7,9 +7,12 @@ from hft_hmm.models.plr_baseline import (
     fit_piecewise_linear_regression,
 )
 
+from . import plr_baseline
+
 __all__ = [
     "PLRBaselineResult",
     "PLRSegment",
     "PLRStateSummary",
     "fit_piecewise_linear_regression",
+    "plr_baseline",
 ]

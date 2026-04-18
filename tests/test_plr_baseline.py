@@ -70,6 +70,8 @@ def test_fit_piecewise_linear_regression_is_deterministic_on_noisy_input() -> No
     assert first.breakpoints == second.breakpoints
     assert first.fitted_values.tolist() == pytest.approx(second.fitted_values.tolist())
     assert first.state_means.tolist() == pytest.approx(second.state_means.tolist())
+    assert first.state_sequence.tolist() == second.state_sequence.tolist()
+    assert first.segment_assignments.tolist() == second.segment_assignments.tolist()
 
 
 def test_fit_piecewise_linear_regression_rejects_invalid_configuration() -> None:
