@@ -31,6 +31,15 @@ from hft_hmm.models import (
 )
 from hft_hmm.preprocessing import compute_log_returns, resample_prices, train_test_split_time
 from hft_hmm.project import PROJECT_NAME, ProjectInfo, get_project_info
+from hft_hmm.selection import (
+    ModelSelectionResult,
+    ModelSelectionRow,
+    aic,
+    bic,
+    compare_state_counts,
+    count_gaussian_hmm_parameters,
+    plot_selection_curves,
+)
 
 __all__ = [
     "ALL_CATEGORIES",
@@ -42,6 +51,8 @@ __all__ = [
     "GaussianHMMWrapper",
     "MarketDataSpec",
     "MarketDataValidationError",
+    "ModelSelectionResult",
+    "ModelSelectionRow",
     "PaperReference",
     "PLRBaselineResult",
     "PLRSegment",
@@ -49,7 +60,11 @@ __all__ = [
     "ProjectInfo",
     "StateGrid",
     "__version__",
+    "aic",
+    "bic",
+    "compare_state_counts",
     "compute_log_returns",
+    "count_gaussian_hmm_parameters",
     "default_labels",
     "fit_piecewise_linear_regression",
     "get_project_info",
@@ -58,6 +73,7 @@ __all__ = [
     "load_databento_parquet",
     "load_yfinance_market_data",
     "module_category",
+    "plot_selection_curves",
     "reference",
     "resample_prices",
     "train_test_split_time",
