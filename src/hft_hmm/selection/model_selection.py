@@ -153,7 +153,10 @@ def compare_state_counts(
         result = wrapper.fit(observations)
         if not result.converged:
             warnings.warn(
-                f"GaussianHMMWrapper.fit did not converge for k={k} with random_state={random_state}.",
+                (
+                    f"GaussianHMMWrapper.fit did not converge for k={k} "
+                    f"with random_state={random_state}."
+                ),
                 RuntimeWarning,
                 stacklevel=2,
             )

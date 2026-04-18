@@ -189,7 +189,14 @@ def test_model_selection_result_any_non_converged_property():
 
 def test_compare_state_counts_warns_for_non_converged_fits(monkeypatch):
     class _FakeWrapper:
-        def __init__(self, n_states: int, *, random_state: int | None, n_iter: int, tol: float) -> None:
+        def __init__(
+            self,
+            n_states: int,
+            *,
+            random_state: int | None,
+            n_iter: int,
+            tol: float,
+        ) -> None:
             self.n_states = n_states
             self.random_state = random_state
 
@@ -202,7 +209,11 @@ def test_compare_state_counts_warns_for_non_converged_fits(monkeypatch):
     monkeypatch.setattr("hft_hmm.selection.model_selection.GaussianHMMWrapper", _FakeWrapper)
 
     with pytest.warns(RuntimeWarning, match=r"did not converge for k=3 with random_state=42"):
-        result = compare_state_counts(_two_regime_returns(seed=11), k_values=[2, 3], random_state=42)
+        result = compare_state_counts(
+            _two_regime_returns(seed=11),
+            k_values=[2, 3],
+            random_state=42,
+        )
 
     assert [row.converged for row in result.rows] == [True, False]
     assert result.any_non_converged is True
