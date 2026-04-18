@@ -177,7 +177,11 @@ def test_load_databento_parquet_accepts_source_schema_spec(tmp_path: Path) -> No
 
     frame = load_databento_parquet(
         path,
-        spec=MarketDataSpec(timestamp_column="ts_event", price_column="close", volume_column="volume"),
+        spec=MarketDataSpec(
+            timestamp_column="ts_event",
+            price_column="close",
+            volume_column="volume",
+        ),
     )
 
     assert list(frame.columns) == ["timestamp", "price", "volume"]
@@ -471,7 +475,11 @@ def test_load_yfinance_market_data_accepts_source_schema_spec(
         start="2024-01-02",
         end="2024-01-04",
         auto_adjust=False,
-        spec=MarketDataSpec(timestamp_column="Date", price_column="Adj Close", volume_column="Volume"),
+        spec=MarketDataSpec(
+            timestamp_column="Date",
+            price_column="Adj Close",
+            volume_column="Volume",
+        ),
     )
 
     assert list(frame.columns) == ["timestamp", "price", "volume"]
