@@ -163,9 +163,7 @@ def _gaussian_log_emissions(
     if means.ndim != 1:
         raise ValueError(f"means must be one-dimensional, got shape {means.shape}.")
     if variances.shape != means.shape:
-        raise ValueError(
-            f"variances must have shape {means.shape}, got {variances.shape}."
-        )
+        raise ValueError(f"variances must have shape {means.shape}, got {variances.shape}.")
 
     centered = returns[:, None] - means[None, :]
     log_emissions = -0.5 * (
