@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from hft_hmm.core import EVALUATION_LAYER, module_category
+from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.evaluation import (
     apply_turnover_cost,
     cumulative_return,
@@ -18,8 +18,30 @@ from hft_hmm.evaluation import (
     signal_turnover,
     summarize_backtest,
 )
+from hft_hmm.inference import forward_filter
+from hft_hmm.models.gaussian_hmm import GaussianHMMResult
+from hft_hmm.strategy import sign_signal
 
 metrics_module = importlib.import_module("hft_hmm.evaluation.metrics")
+
+
+def _toy_model() -> GaussianHMMResult:
+    means = np.array([-1.0, 1.0], dtype=float)
+    variances = np.array([0.1, 0.1], dtype=float)
+    transition_matrix = np.array([[0.95, 0.05], [0.05, 0.95]], dtype=float)
+    initial_distribution = np.array([0.5, 0.5], dtype=float)
+    return GaussianHMMResult(
+        state_grid=StateGrid(k=2, means=means, labels=("down", "up")),
+        means=means,
+        variances=variances,
+        transition_matrix=transition_matrix,
+        initial_distribution=initial_distribution,
+        log_likelihood=0.0,
+        n_observations=8,
+        converged=True,
+        n_iter=10,
+        random_state=0,
+    )
 
 
 def test_metrics_module_declares_evaluation_layer_category() -> None:
@@ -69,6 +91,58 @@ def test_apply_turnover_cost_rejects_invalid_alignment_and_cost() -> None:
         apply_turnover_cost(strategy_returns, turnover, cost_bps_per_turnover=1.0)
     with pytest.raises(ValueError, match="non-negative"):
         apply_turnover_cost(strategy_returns, strategy_returns, cost_bps_per_turnover=-1.0)
+
+
+def test_apply_turnover_cost_rejects_non_series_inputs() -> None:
+    series = pd.Series([0.1, 0.2], index=[0, 1])
+
+    with pytest.raises(TypeError, match="strategy_returns"):
+        apply_turnover_cost(
+            np.array([0.1, 0.2]),  # type: ignore[arg-type]
+            series,
+            cost_bps_per_turnover=1.0,
+        )
+    with pytest.raises(TypeError, match="turnover"):
+        apply_turnover_cost(
+            series,
+            np.array([0.1, 0.2]),  # type: ignore[arg-type]
+            cost_bps_per_turnover=1.0,
+        )
+
+
+def test_apply_turnover_cost_rejects_length_mismatch_and_empty() -> None:
+    short = pd.Series([0.1], index=[0])
+    long = pd.Series([0.1, 0.2], index=[0, 1])
+
+    with pytest.raises(ValueError, match="same length"):
+        apply_turnover_cost(short, long, cost_bps_per_turnover=1.0)
+
+    empty = pd.Series([], index=pd.Index([], dtype="int64"), dtype=float)
+    with pytest.raises(ValueError, match="at least one observation"):
+        apply_turnover_cost(empty, empty, cost_bps_per_turnover=1.0)
+
+
+def test_apply_turnover_cost_rejects_non_finite_values() -> None:
+    index = pd.RangeIndex(3)
+    finite = pd.Series([0.1, 0.2, 0.3], index=index)
+    with_nan = pd.Series([0.1, np.nan, 0.3], index=index)
+    with_inf = pd.Series([0.1, 0.2, float("inf")], index=index)
+
+    with pytest.raises(ValueError, match="cost_bps_per_turnover"):
+        apply_turnover_cost(finite, finite, cost_bps_per_turnover=float("nan"))
+    with pytest.raises(ValueError, match="strategy_returns must contain only finite"):
+        apply_turnover_cost(with_nan, finite, cost_bps_per_turnover=1.0)
+    with pytest.raises(ValueError, match="turnover must contain only finite"):
+        apply_turnover_cost(finite, with_inf, cost_bps_per_turnover=1.0)
+
+
+def test_metric_coercion_rejects_invalid_arrays() -> None:
+    with pytest.raises(ValueError, match="one-dimensional"):
+        cumulative_return(np.zeros((3, 2)))
+    with pytest.raises(ValueError, match="at least one"):
+        cumulative_return(np.array([], dtype=float))
+    with pytest.raises(ValueError, match="finite"):
+        cumulative_return(np.array([0.1, np.nan, 0.3]))
 
 
 def test_cumulative_return_compounds_log_returns() -> None:
@@ -163,3 +237,31 @@ def test_summarize_backtest_handles_single_period() -> None:
     assert summary.loc["pre-cost", "n_periods"] == 1
     assert summary.loc["pre-cost", "sharpe_ratio"] == 0.0
     assert summary.loc["pre-cost", "hit_rate"] == pytest.approx(1.0)
+
+
+def test_summarize_backtest_end_to_end_with_forward_filter() -> None:
+    """Thread forward_filter → sign_signal → summarize_backtest on the toy HMM."""
+    model = _toy_model()
+    index = pd.date_range("2024-01-01 09:30", periods=8, freq="1min")
+    realized_returns = pd.Series(
+        [-1.2, -0.8, -0.9, -1.1, 0.9, 1.1, 0.8, 1.0],
+        index=index,
+    )
+
+    filter_result = forward_filter(realized_returns.to_numpy(), model)
+    signal = sign_signal(pd.Series(filter_result.expected_next_returns, index=index))
+    summary = summarize_backtest(signal, realized_returns, cost_bps_per_turnover=1.0)
+
+    assert summary.loc["pre-cost", "n_periods"] == 7
+    assert summary.loc["post-cost", "n_periods"] == 7
+    assert summary.loc["pre-cost", "cost_bps_per_turnover"] == pytest.approx(0.0)
+    assert summary.loc["post-cost", "cost_bps_per_turnover"] == pytest.approx(1.0)
+    # Sign tracks regime, so the strategy should be profitable pre-cost on this
+    # strongly persistent two-state fixture.
+    assert summary.loc["pre-cost", "cumulative_return"] > 0.0
+    assert summary.loc["pre-cost", "hit_rate"] > 0.5
+    # Post-cost cumulative return is at most pre-cost (equal only when no
+    # rebalances happen, but the regime flip here forces at least one trade).
+    assert (
+        summary.loc["post-cost", "cumulative_return"] < summary.loc["pre-cost", "cumulative_return"]
+    )
