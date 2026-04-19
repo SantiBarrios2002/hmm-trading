@@ -41,6 +41,13 @@ from hft_hmm.selection import (
     count_gaussian_hmm_parameters,
     plot_selection_curves,
 )
+from hft_hmm.strategy import (
+    SIGNAL_REFERENCE,
+    align_signal_with_future_return,
+    sign_signal,
+    signal_from_filter_result,
+    thresholded_signal,
+)
 
 __all__ = [
     "ALL_CATEGORIES",
@@ -48,6 +55,7 @@ __all__ = [
     "EVALUATION_LAYER",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
+    "SIGNAL_REFERENCE",
     "ForwardFilterResult",
     "GaussianHMMResult",
     "GaussianHMMWrapper",
@@ -63,6 +71,7 @@ __all__ = [
     "StateGrid",
     "__version__",
     "aic",
+    "align_signal_with_future_return",
     "bic",
     "compare_state_counts",
     "compute_log_returns",
@@ -80,6 +89,9 @@ __all__ = [
     "plot_selection_curves",
     "reference",
     "resample_prices",
+    "sign_signal",
+    "signal_from_filter_result",
+    "thresholded_signal",
     "train_test_split_time",
     "validate_market_data",
 ]
