@@ -122,9 +122,9 @@ def test_summarize_backtest_returns_pre_and_post_cost_rows() -> None:
     assert summary.loc["pre-cost", "n_periods"] == 3
     assert summary.loc["pre-cost", "cost_bps_per_turnover"] == pytest.approx(0.0)
     assert summary.loc["post-cost", "cost_bps_per_turnover"] == pytest.approx(10.0)
-    assert summary.loc["post-cost", "cumulative_return"] < summary.loc[
-        "pre-cost", "cumulative_return"
-    ]
+    assert (
+        summary.loc["post-cost", "cumulative_return"] < summary.loc["pre-cost", "cumulative_return"]
+    )
 
 
 def test_summarize_backtest_post_cost_sharpe_equals_pre_cost_when_cost_is_zero() -> None:

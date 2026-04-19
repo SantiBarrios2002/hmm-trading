@@ -63,8 +63,7 @@ def apply_turnover_cost(
     """Subtract linear turnover costs from aligned strategy returns."""
     if not isinstance(strategy_returns, pd.Series):
         raise TypeError(
-            "strategy_returns must be a pd.Series, "
-            f"got {type(strategy_returns).__name__}."
+            "strategy_returns must be a pd.Series, " f"got {type(strategy_returns).__name__}."
         )
     if not isinstance(turnover, pd.Series):
         raise TypeError(f"turnover must be a pd.Series, got {type(turnover).__name__}.")
