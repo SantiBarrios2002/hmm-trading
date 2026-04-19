@@ -159,6 +159,15 @@ def test_sharpe_ratio_matches_sample_mean_over_std() -> None:
     assert sharpe_ratio(strategy_returns) == pytest.approx(2.0)
 
 
+def test_sharpe_ratio_matches_sample_mean_over_std_asymmetric() -> None:
+    strategy_returns = np.array([0.1, -0.2, 0.3, 0.0], dtype=float)
+
+    sample_mean = float(strategy_returns.mean())
+    sample_std = float(strategy_returns.std(ddof=1))
+
+    assert sharpe_ratio(strategy_returns) == pytest.approx(sample_mean / sample_std)
+
+
 @pytest.mark.parametrize(
     "strategy_returns",
     [

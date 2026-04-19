@@ -67,6 +67,10 @@ def apply_turnover_cost(
         )
     if not isinstance(turnover, pd.Series):
         raise TypeError(f"turnover must be a pd.Series, got {type(turnover).__name__}.")
+    if len(strategy_returns) < 1:
+        raise ValueError("strategy_returns must contain at least one observation.")
+    if len(turnover) < 1:
+        raise ValueError("turnover must contain at least one observation.")
     if len(strategy_returns) != len(turnover):
         raise ValueError(
             "strategy_returns and turnover must have the same length; "
@@ -77,8 +81,6 @@ def apply_turnover_cost(
             "strategy_returns and turnover must share the same index; "
             "align them to the same rebalance timeline before applying costs."
         )
-    if len(strategy_returns) < 1:
-        raise ValueError("strategy_returns must contain at least one observation.")
     if not np.isfinite(cost_bps_per_turnover) or cost_bps_per_turnover < 0.0:
         raise ValueError(
             "cost_bps_per_turnover must be a finite non-negative float, "
@@ -112,10 +114,12 @@ def sharpe_ratio(strategy_returns: pd.Series | np.ndarray) -> float:
     if values.shape[0] < 2:
         return 0.0
 
+    mean = float(values.mean())
     std = float(values.std(ddof=1))
-    if std <= np.finfo(float).eps:
+    eps = np.finfo(float).eps
+    if std <= eps * max(1.0, abs(mean)):
         return 0.0
-    return float(values.mean() / std)
+    return float(mean / std)
 
 
 def max_drawdown(strategy_returns: pd.Series | np.ndarray) -> float:
