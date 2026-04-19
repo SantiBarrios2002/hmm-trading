@@ -108,6 +108,8 @@ def forward_filter(
     )
 
     with np.errstate(divide="ignore"):
+        # Zero-probability entries map to -inf under log; this is expected and
+        # downstream logsumexp handles those values safely.
         log_start = np.log(model.initial_distribution)
         log_transition = np.log(model.transition_matrix)
 
@@ -139,6 +141,15 @@ def forward_filter(
         expected_next_returns=expected_next_returns,
         log_likelihood=log_likelihood,
     )
+
+
+def filter_from_result(
+    fitted: GaussianHMMResult,
+    returns: pd.Series | np.ndarray,
+) -> ForwardFilterResult:
+    """Convenience wrapper that filters using a fitted Gaussian-HMM result."""
+
+    return forward_filter(returns, model=fitted)
 
 
 def _coerce_returns(returns: pd.Series | np.ndarray) -> np.ndarray:

@@ -21,7 +21,7 @@ from hft_hmm.data import (
     load_yfinance_market_data,
     validate_market_data,
 )
-from hft_hmm.inference import ForwardFilterResult, forward_filter
+from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models import (
     GaussianHMMResult,
     GaussianHMMWrapper,
@@ -69,6 +69,7 @@ __all__ = [
     "count_gaussian_hmm_parameters",
     "default_labels",
     "fit_piecewise_linear_regression",
+    "filter_from_result",
     "forward_filter",
     "get_project_info",
     "linear_grid",

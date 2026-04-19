@@ -6,9 +6,12 @@ import importlib
 
 import numpy as np
 import pytest
+from hmmlearn import _hmmc
+from hmmlearn.hmm import GaussianHMM
+from scipy.special import logsumexp
 
 from hft_hmm.core import PAPER_FAITHFUL, StateGrid, module_category
-from hft_hmm.inference import ForwardFilterResult, forward_filter
+from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult
 
 forward_filter_module = importlib.import_module("hft_hmm.inference.forward_filter")
@@ -75,6 +78,53 @@ def test_forward_filter_matches_manual_first_step_posterior() -> None:
     np.testing.assert_allclose(result.filtering_probabilities[0], posterior)
 
 
+def test_filter_from_result_wrapper_matches_forward_filter() -> None:
+    fitted = _toy_model()
+    returns = np.array([-1.2, -0.8, 0.9, 1.1], dtype=float)
+
+    wrapped = filter_from_result(fitted, returns)
+    direct = forward_filter(returns, model=fitted)
+
+    np.testing.assert_allclose(wrapped.filtering_probabilities, direct.filtering_probabilities)
+    np.testing.assert_allclose(
+        wrapped.predicted_next_state_probabilities,
+        direct.predicted_next_state_probabilities,
+    )
+    np.testing.assert_allclose(wrapped.expected_next_returns, direct.expected_next_returns)
+    assert np.isclose(wrapped.log_likelihood, direct.log_likelihood)
+
+
+def test_forward_filter_matches_hmmlearn_reference() -> None:
+    fitted = _toy_model()
+    rng = np.random.default_rng(0)
+    returns = rng.normal(size=500)
+    observations = returns.reshape(-1, 1)
+
+    ref = GaussianHMM(
+        n_components=fitted.state_grid.k,
+        covariance_type="diag",
+        implementation="log",
+    )
+    ref.startprob_ = fitted.initial_distribution
+    ref.transmat_ = fitted.transition_matrix
+    ref.means_ = fitted.means.reshape(-1, 1)
+    ref.covars_ = fitted.variances.reshape(-1, 1)
+
+    result = forward_filter(returns, model=fitted)
+    log_frameprob = ref._compute_log_likelihood(observations)
+    _, forward_log_lattice = _hmmc.forward_log(ref.startprob_, ref.transmat_, log_frameprob)
+    forward_probabilities = np.exp(
+        forward_log_lattice - logsumexp(forward_log_lattice, axis=1, keepdims=True)
+    )
+
+    np.testing.assert_allclose(
+        result.filtering_probabilities,
+        forward_probabilities,
+        atol=1e-10,
+    )
+    assert np.isclose(result.log_likelihood, ref.score(observations), atol=1e-8)
+
+
 def test_forward_filter_rejects_invalid_returns() -> None:
     model = _toy_model()
 
@@ -97,5 +147,8 @@ def test_forward_filter_stays_finite_on_long_sequence() -> None:
     assert np.all(np.isfinite(result.predicted_next_state_probabilities))
     assert np.all(np.isfinite(result.expected_next_returns))
     assert np.isfinite(result.log_likelihood)
+    per_step_ll = result.log_likelihood / returns.size
+    assert np.isfinite(per_step_ll)
+    assert -10.0 < per_step_ll < 0.0
     assert np.allclose(result.filtering_probabilities.sum(axis=1), 1.0)
     assert np.allclose(result.predicted_next_state_probabilities.sum(axis=1), 1.0)
