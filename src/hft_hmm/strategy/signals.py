@@ -164,6 +164,7 @@ def _coerce_expected_returns(
     expected_next_returns: pd.Series | np.ndarray,
 ) -> tuple[np.ndarray, pd.Index]:
     if isinstance(expected_next_returns, pd.Series):
+        # pd.Series is inherently 1-D; only non-Series inputs need an explicit ndim check.
         values = np.asarray(expected_next_returns, dtype=float)
         index: pd.Index = expected_next_returns.index
     else:

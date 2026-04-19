@@ -191,13 +191,14 @@ def test_align_leakage_probe_does_not_peek_into_future() -> None:
 
     # Wrong (same-bar) and wrong (future-peek) must not match the output.
     wrong_same_bar = (signal * returns).iloc[1:].to_numpy().astype(float)
-    wrong_future_peek = (signal.iloc[:-1].to_numpy() * returns.iloc[1:].to_numpy()).astype(float)
-    # The future-peek alignment happens to coincide with the correct one here
-    # because of how we align (signal[t-1] matches signal[:-1]); the test of
-    # record is that the *same-bar* wrong alignment is distinguishable.
+    wrong_future_peek = (signal.iloc[1:].to_numpy() * returns.iloc[:-1].to_numpy()).astype(float)
+    canonical_prev_signal = (signal.iloc[:-1].to_numpy() * returns.iloc[1:].to_numpy()).astype(
+        float
+    )
     assert not np.allclose(aligned.to_numpy(), wrong_same_bar)
+    assert not np.allclose(aligned.to_numpy(), wrong_future_peek)
     # Sanity: the helper matches the canonical vectorized expression.
-    np.testing.assert_allclose(aligned.to_numpy(), wrong_future_peek)
+    np.testing.assert_allclose(aligned.to_numpy(), canonical_prev_signal)
 
 
 def test_signal_from_filter_result_matches_sign_on_expected_returns() -> None:

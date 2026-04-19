@@ -42,6 +42,7 @@ from hft_hmm.selection import (
     plot_selection_curves,
 )
 from hft_hmm.strategy import (
+    SIGNAL_REFERENCE,
     align_signal_with_future_return,
     sign_signal,
     signal_from_filter_result,
@@ -54,6 +55,7 @@ __all__ = [
     "EVALUATION_LAYER",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
+    "SIGNAL_REFERENCE",
     "ForwardFilterResult",
     "GaussianHMMResult",
     "GaussianHMMWrapper",
