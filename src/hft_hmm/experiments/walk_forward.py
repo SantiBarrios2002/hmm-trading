@@ -4,16 +4,21 @@ This module reproduces the paper's retraining scheme (§2.3: *"parameter
 estimation can be done using the previous H days of market data, when the
 market is shut"*). The default window length ``h_days = 23`` matches §3.1
 (one-month rolling window) and the forecast horizon ``t_days = 1`` matches
-the paper's daily cadence — fit during the overnight break, forecast the next
-trading day, advance the window by one day, retrain.
+the paper's daily cadence. Retraining cadence is configurable via
+``retrain_every_days`` and defaults to once per forecast horizon, so the
+default behavior is: fit during the overnight break, forecast the next
+trading day, advance one day, retrain.
 
 Algorithm
 ---------
 1. Group the input return series by calendar date from its tz-aware
    ``DatetimeIndex``. The distinct sorted dates define the walk-forward grid.
 2. For each window ``i`` in ``0..n_windows - 1``:
-   - train slice  = bars on dates[i*t_days : i*t_days + h_days]
-   - forecast slice = bars on dates[i*t_days + h_days : i*t_days + h_days + t_days]
+   - train slice = bars on
+     dates[i*retrain_every_days : i*retrain_every_days + h_days]
+   - forecast slice = bars on dates[
+     i*retrain_every_days + h_days :
+     i*retrain_every_days + h_days + t_days]
    - assert ``train.index.max() < forecast.index.min()`` as the no-leakage
      guard.
    - Fit a :class:`~hft_hmm.models.gaussian_hmm.GaussianHMMWrapper`. When the
@@ -23,9 +28,11 @@ Algorithm
    - Run :func:`~hft_hmm.inference.forward_filter` on the forecast slice and
      emit a sign-based signal via
      :func:`~hft_hmm.strategy.signal_from_filter_result`.
-3. Concatenate per-window signals into one series spanning the full
-   out-of-sample forecast horizon and summarize via
-   :func:`~hft_hmm.evaluation.summarize_backtest`.
+   - Align returns and summarize metrics *within that forecast window* so
+     signals from an earlier model are never applied across a retraining
+     boundary.
+3. Concatenate per-window signals and per-window return series across the
+   covered out-of-sample bars, then summarize the full experiment.
 
 References: §2.3 rolling-window overnight retraining scheme (evaluation layer)
 """
@@ -39,7 +46,14 @@ import numpy as np
 import pandas as pd
 
 from hft_hmm.core import EVALUATION_LAYER, PaperReference, reference
-from hft_hmm.evaluation import summarize_backtest
+from hft_hmm.evaluation import (
+    apply_turnover_cost,
+    cumulative_return,
+    hit_rate,
+    max_drawdown,
+    sharpe_ratio,
+    signal_turnover,
+)
 from hft_hmm.inference import forward_filter
 from hft_hmm.models.gaussian_hmm import GaussianHMMWrapper
 from hft_hmm.selection import compare_state_counts
@@ -57,11 +71,13 @@ class WalkForwardConfig:
 
     Paper-anchored defaults: ``h_days = 23`` trading days (§3.1 rolling
     window), ``t_days = 1`` day forecast horizon (paper retrains nightly),
+    ``retrain_every_days = t_days`` (retrain once per forecast horizon), and
     ``k_values = (2,)`` (paper's cross-validation default K=2).
     """
 
     h_days: int = 23
     t_days: int = 1
+    retrain_every_days: int | None = None
     k_values: tuple[int, ...] = (2,)
     random_state: int = 0
     n_iter: int = 100
@@ -72,10 +88,26 @@ class WalkForwardConfig:
             raise ValueError(f"h_days must be >= 1, got {self.h_days}.")
         if self.t_days < 1:
             raise ValueError(f"t_days must be >= 1, got {self.t_days}.")
+
+        retrain_every_days = (
+            self.t_days if self.retrain_every_days is None else self.retrain_every_days
+        )
+        if retrain_every_days < 1:
+            raise ValueError(
+                f"retrain_every_days must be >= 1, got {retrain_every_days}."
+            )
+        if retrain_every_days < self.t_days:
+            raise ValueError(
+                "retrain_every_days must be >= t_days to avoid overlapping "
+                f"forecast windows; got retrain_every_days={retrain_every_days}, "
+                f"t_days={self.t_days}."
+            )
+
         if self.n_iter < 1:
             raise ValueError(f"n_iter must be >= 1, got {self.n_iter}.")
         if self.tol <= 0.0:
             raise ValueError(f"tol must be strictly positive, got {self.tol}.")
+
         k_tuple = tuple(self.k_values)
         if not k_tuple:
             raise ValueError("k_values must contain at least one candidate.")
@@ -86,6 +118,8 @@ class WalkForwardConfig:
                 raise TypeError(f"k_values entries must be int, got {type(k).__name__}.")
             if k < 2:
                 raise ValueError(f"k_values entries must be >= 2, got {k}.")
+
+        object.__setattr__(self, "retrain_every_days", int(retrain_every_days))
         object.__setattr__(self, "k_values", k_tuple)
 
 
@@ -102,6 +136,7 @@ class WalkForwardWindow:
     log_likelihood: float
     n_train_obs: int
     n_forecast_obs: int
+    summary: pd.DataFrame
 
     def __post_init__(self) -> None:
         if self.index < 0:
@@ -121,6 +156,8 @@ class WalkForwardWindow:
                 "forecast_start must be strictly after train_end; "
                 f"got train_end={self.train_end} forecast_start={self.forecast_start}."
             )
+        if not isinstance(self.summary, pd.DataFrame):
+            raise TypeError("summary must be a pd.DataFrame.")
 
 
 @dataclass(frozen=True)
@@ -140,6 +177,10 @@ class WalkForwardResult:
             raise ValueError("walk-forward run produced zero windows.")
         if not isinstance(self.signal, pd.Series):
             raise TypeError("signal must be a pd.Series.")
+        if not isinstance(self.pre_cost_returns, pd.Series):
+            raise TypeError("pre_cost_returns must be a pd.Series.")
+        if not isinstance(self.post_cost_returns, pd.Series):
+            raise TypeError("post_cost_returns must be a pd.Series.")
         if not isinstance(self.summary, pd.DataFrame):
             raise TypeError("summary must be a pd.DataFrame.")
         if self.cost_bps_per_turnover < 0.0 or not np.isfinite(self.cost_bps_per_turnover):
@@ -159,9 +200,8 @@ def walk_forward(
 
     The input ``returns`` must be a ``pd.Series`` with a tz-aware monotonic
     ``DatetimeIndex`` so that calendar-date grouping is unambiguous. The
-    ``cost_bps_per_turnover`` parameter is threaded into the final
-    :func:`~hft_hmm.evaluation.summarize_backtest` call; it does not change
-    the signal path itself.
+    ``cost_bps_per_turnover`` parameter only affects evaluation-layer metrics;
+    it does not change the signal path itself.
 
     References: §2.3 rolling-window overnight retraining scheme (evaluation layer)
     """
@@ -186,21 +226,27 @@ def walk_forward(
             f"got {n_dates} dates for h_days={config.h_days}, t_days={config.t_days}."
         )
 
-    n_windows = (n_dates - config.h_days) // config.t_days
+    if config.retrain_every_days is None:  # pragma: no cover - normalized in __post_init__
+        raise AssertionError("config.retrain_every_days must be normalized in __post_init__.")
+    retrain_every_days = config.retrain_every_days
+    max_window_start = n_dates - config.h_days - config.t_days
+    n_windows = max_window_start // retrain_every_days + 1
     if n_windows < 1:  # pragma: no cover - guarded by the distinct-dates check above
         raise ValueError("walk-forward produced zero windows; check h_days / t_days.")
 
     windows: list[WalkForwardWindow] = []
     signal_parts: list[pd.Series] = []
+    pre_cost_return_parts: list[pd.Series] = []
+    post_cost_return_parts: list[pd.Series] = []
     bar_dates = returns.index.date
 
-    for window_index in range(n_windows):
-        train_start_date = sorted_dates[window_index * config.t_days]
-        train_end_date = sorted_dates[window_index * config.t_days + config.h_days - 1]
-        forecast_start_date = sorted_dates[window_index * config.t_days + config.h_days]
-        forecast_end_date = sorted_dates[
-            window_index * config.t_days + config.h_days + config.t_days - 1
-        ]
+    for window_index, day_offset in enumerate(
+        range(0, max_window_start + 1, retrain_every_days)
+    ):
+        train_start_date = sorted_dates[day_offset]
+        train_end_date = sorted_dates[day_offset + config.h_days - 1]
+        forecast_start_date = sorted_dates[day_offset + config.h_days]
+        forecast_end_date = sorted_dates[day_offset + config.h_days + config.t_days - 1]
 
         train_mask = (bar_dates >= train_start_date) & (bar_dates <= train_end_date)
         forecast_mask = (bar_dates >= forecast_start_date) & (bar_dates <= forecast_end_date)
@@ -228,8 +274,21 @@ def walk_forward(
             threshold=0.0,
             index=forecast_slice.index,
         )
-        signal_parts.append(window_signal)
+        window_pre_cost_returns = align_signal_with_future_return(window_signal, forecast_slice)
+        window_post_cost_returns = apply_turnover_cost(
+            window_pre_cost_returns,
+            signal_turnover(window_signal),
+            cost_bps_per_turnover=cost_bps_per_turnover,
+        )
+        window_summary = _summarize_return_modes(
+            window_pre_cost_returns,
+            window_post_cost_returns,
+            cost_bps_per_turnover=cost_bps_per_turnover,
+        )
 
+        signal_parts.append(window_signal)
+        pre_cost_return_parts.append(window_pre_cost_returns)
+        post_cost_return_parts.append(window_post_cost_returns)
         windows.append(
             WalkForwardWindow(
                 index=window_index,
@@ -241,29 +300,18 @@ def walk_forward(
                 log_likelihood=fitted.log_likelihood,
                 n_train_obs=int(train_slice.shape[0]),
                 n_forecast_obs=int(forecast_slice.shape[0]),
+                summary=window_summary,
             )
         )
 
     combined_signal = pd.concat(signal_parts).astype(np.int8)
     combined_signal.name = "signal"
-    realized_on_forecast = returns.loc[combined_signal.index]
-
-    pre_cost_returns = align_signal_with_future_return(combined_signal, realized_on_forecast)
-    summary = summarize_backtest(
-        combined_signal,
-        realized_on_forecast,
+    pre_cost_returns = pd.concat(pre_cost_return_parts)
+    post_cost_returns = pd.concat(post_cost_return_parts)
+    summary = _summarize_return_modes(
+        pre_cost_returns,
+        post_cost_returns,
         cost_bps_per_turnover=cost_bps_per_turnover,
-    )
-
-    # Recompute post-cost returns for the result object (summarize_backtest
-    # already builds them internally, but does not expose the series).
-    turnover_values = np.abs(np.diff(np.asarray(combined_signal, dtype=float)))
-    cost_in_return_units = turnover_values * (cost_bps_per_turnover * 1e-4)
-    post_cost_values = pre_cost_returns.to_numpy() - cost_in_return_units
-    post_cost_returns = pd.Series(
-        post_cost_values,
-        index=pre_cost_returns.index,
-        name="strategy_return_post_cost",
     )
 
     return WalkForwardResult(
@@ -283,7 +331,7 @@ def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
     With a single candidate, use it directly. With multiple candidates, run
     the model-selection sweep and take ``best_by_bic`` — BIC penalizes
     complexity more aggressively than AIC, which matches the paper's
-    preference for parsimonious 2–3 state models in §3.1.
+    preference for parsimonious 2-3 state models in §3.1.
     """
     if len(config.k_values) == 1:
         return int(config.k_values[0])
@@ -295,3 +343,33 @@ def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
         tol=config.tol,
     )
     return int(selection.best_by_bic)
+
+
+def _summarize_return_modes(
+    pre_cost_returns: pd.Series,
+    post_cost_returns: pd.Series,
+    *,
+    cost_bps_per_turnover: float,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _summary_row(pre_cost_returns, cost_bps_per_turnover=0.0),
+            _summary_row(post_cost_returns, cost_bps_per_turnover=cost_bps_per_turnover),
+        ],
+        index=pd.Index(["pre-cost", "post-cost"], name="mode"),
+    )
+
+
+def _summary_row(
+    strategy_returns: pd.Series,
+    *,
+    cost_bps_per_turnover: float,
+) -> dict[str, float | int]:
+    return {
+        "n_periods": int(strategy_returns.shape[0]),
+        "cost_bps_per_turnover": float(cost_bps_per_turnover),
+        "cumulative_return": cumulative_return(strategy_returns),
+        "sharpe_ratio": sharpe_ratio(strategy_returns),
+        "max_drawdown": max_drawdown(strategy_returns),
+        "hit_rate": hit_rate(strategy_returns),
+    }
