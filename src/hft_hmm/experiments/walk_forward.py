@@ -94,9 +94,7 @@ class WalkForwardConfig:
             self.t_days if self.retrain_every_days is None else self.retrain_every_days
         )
         if retrain_every_days < 1:
-            raise ValueError(
-                f"retrain_every_days must be >= 1, got {retrain_every_days}."
-            )
+            raise ValueError(f"retrain_every_days must be >= 1, got {retrain_every_days}.")
         if self.n_iter < 1:
             raise ValueError(f"n_iter must be >= 1, got {self.n_iter}.")
         if self.tol <= 0.0:
@@ -264,9 +262,7 @@ def walk_forward(
     post_cost_return_parts: list[pd.Series] = []
     bar_dates = returns.index.date
 
-    for window_index, day_offset in enumerate(
-        range(0, max_window_start + 1, retrain_every_days)
-    ):
+    for window_index, day_offset in enumerate(range(0, max_window_start + 1, retrain_every_days)):
         train_start_date = sorted_dates[day_offset]
         train_end_date = sorted_dates[day_offset + config.h_days - 1]
         forecast_start_date = sorted_dates[day_offset + config.h_days]
