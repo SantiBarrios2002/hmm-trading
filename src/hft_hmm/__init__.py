@@ -31,6 +31,13 @@ from hft_hmm.evaluation import (
     signal_turnover,
     summarize_backtest,
 )
+from hft_hmm.experiments import (
+    WALK_FORWARD_REFERENCE,
+    WalkForwardConfig,
+    WalkForwardResult,
+    WalkForwardWindow,
+    walk_forward,
+)
 from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models import (
     GaussianHMMResult,
@@ -67,6 +74,7 @@ __all__ = [
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
     "SIGNAL_REFERENCE",
+    "WALK_FORWARD_REFERENCE",
     "ForwardFilterResult",
     "GaussianHMMResult",
     "GaussianHMMWrapper",
@@ -80,6 +88,9 @@ __all__ = [
     "PLRStateSummary",
     "ProjectInfo",
     "StateGrid",
+    "WalkForwardConfig",
+    "WalkForwardResult",
+    "WalkForwardWindow",
     "__version__",
     "aic",
     "align_signal_with_future_return",
@@ -112,4 +123,5 @@ __all__ = [
     "thresholded_signal",
     "train_test_split_time",
     "validate_market_data",
+    "walk_forward",
 ]
