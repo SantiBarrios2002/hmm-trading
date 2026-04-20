@@ -241,7 +241,9 @@ def test_run_experiment_serializes_missing_metrics_as_json_null(
         summary=summary,
     )
 
-    monkeypatch.setattr("hft_hmm.experiments.runner.walk_forward", lambda *args, **kwargs: fake_result)
+    monkeypatch.setattr(
+        "hft_hmm.experiments.runner.walk_forward", lambda *args, **kwargs: fake_result
+    )
 
     artifacts = run_experiment(_csv_config(), runs_root=tmp_path)
     metrics = json.loads((artifacts.directory / "metrics.json").read_text())

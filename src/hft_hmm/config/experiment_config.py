@@ -156,8 +156,7 @@ class ExperimentConfig:
                 char not in "0123456789abcdef" for char in normalized_sha256
             ):
                 raise ValueError(
-                    "sha256 must be a 64-character hexadecimal digest, "
-                    f"got {self.sha256!r}."
+                    "sha256 must be a 64-character hexadecimal digest, " f"got {self.sha256!r}."
                 )
             object.__setattr__(self, "sha256", normalized_sha256)
         elif self.sha256 is not None:

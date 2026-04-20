@@ -181,7 +181,9 @@ def _write_artifacts(
 ) -> None:
     (run_dir / "figures").mkdir()
     (run_dir / "config.yaml").write_bytes(config.to_yaml_bytes())
-    _write_metrics(run_dir / "metrics.json", config, experiment_id, result, reproducible=reproducible)
+    _write_metrics(
+        run_dir / "metrics.json", config, experiment_id, result, reproducible=reproducible
+    )
     _write_log(run_dir / "log.jsonl", result)
 
 
