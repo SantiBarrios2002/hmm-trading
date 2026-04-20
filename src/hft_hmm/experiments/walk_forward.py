@@ -28,9 +28,10 @@ Algorithm
    - Run :func:`~hft_hmm.inference.forward_filter` on the forecast slice and
      emit a sign-based signal via
      :func:`~hft_hmm.strategy.signal_from_filter_result`.
-   - Align returns and summarize metrics *within that forecast window* so
-     signals from an earlier model are never applied across a retraining
-     boundary.
+   - When ``retrain_every_days < t_days``, truncate the effective contribution
+     of the current forecast slice at the next retraining boundary so later
+     models supersede overlapping future bars.
+   - Align returns and summarize metrics within that effective forecast slice.
 3. Concatenate per-window signals and per-window return series across the
    covered out-of-sample bars, then summarize the full experiment.
 
@@ -96,13 +97,6 @@ class WalkForwardConfig:
             raise ValueError(
                 f"retrain_every_days must be >= 1, got {retrain_every_days}."
             )
-        if retrain_every_days < self.t_days:
-            raise ValueError(
-                "retrain_every_days must be >= t_days to avoid overlapping "
-                f"forecast windows; got retrain_every_days={retrain_every_days}, "
-                f"t_days={self.t_days}."
-            )
-
         if self.n_iter < 1:
             raise ValueError(f"n_iter must be >= 1, got {self.n_iter}.")
         if self.tol <= 0.0:
@@ -189,6 +183,36 @@ class WalkForwardResult:
                 f"got {self.cost_bps_per_turnover!r}."
             )
 
+        signal_values = np.asarray(self.signal, dtype=float)
+        pre_cost_values = np.asarray(self.pre_cost_returns, dtype=float)
+        post_cost_values = np.asarray(self.post_cost_returns, dtype=float)
+        if not np.all(np.isfinite(signal_values)):
+            raise ValueError("signal must contain only finite values.")
+        if not np.all(np.isfinite(pre_cost_values)):
+            raise ValueError("pre_cost_returns must contain only finite values.")
+        if not np.all(np.isfinite(post_cost_values)):
+            raise ValueError("post_cost_returns must contain only finite values.")
+        if not self.pre_cost_returns.index.equals(self.post_cost_returns.index):
+            raise ValueError("pre_cost_returns and post_cost_returns must share the same index.")
+        if len(self.pre_cost_returns) != len(self.signal) - len(self.windows):
+            raise ValueError(
+                "pre_cost_returns length must equal len(signal) - len(windows); "
+                f"got len(pre_cost_returns)={len(self.pre_cost_returns)}, "
+                f"len(signal)={len(self.signal)}, len(windows)={len(self.windows)}."
+            )
+
+        expected_return_index = _expected_return_index(self.signal, self.windows)
+        if not self.pre_cost_returns.index.equals(expected_return_index):
+            raise ValueError(
+                "pre_cost_returns index must match the walk-forward return timeline implied "
+                "by signal and windows."
+            )
+        if not self.post_cost_returns.index.equals(expected_return_index):
+            raise ValueError(
+                "post_cost_returns index must match the walk-forward return timeline implied "
+                "by signal and windows."
+            )
+
 
 def walk_forward(
     returns: pd.Series,
@@ -259,6 +283,15 @@ def walk_forward(
             f"{forecast_slice.index.min()}."
         )
 
+        next_day_offset = day_offset + retrain_every_days
+        if next_day_offset <= max_window_start:
+            next_forecast_start_date = sorted_dates[next_day_offset + config.h_days]
+            effective_forecast_slice = forecast_slice.loc[
+                forecast_slice.index.date < next_forecast_start_date
+            ]
+        else:
+            effective_forecast_slice = forecast_slice
+
         chosen_k = _select_k(train_slice, config)
         wrapper = GaussianHMMWrapper(
             n_states=chosen_k,
@@ -268,13 +301,15 @@ def walk_forward(
         )
         fitted = wrapper.fit(train_slice)
 
-        filter_result = forward_filter(forecast_slice, fitted)
+        filter_result = forward_filter(effective_forecast_slice, fitted)
         window_signal = signal_from_filter_result(
             filter_result,
             threshold=0.0,
-            index=forecast_slice.index,
+            index=effective_forecast_slice.index,
         )
-        window_pre_cost_returns = align_signal_with_future_return(window_signal, forecast_slice)
+        window_pre_cost_returns = align_signal_with_future_return(
+            window_signal, effective_forecast_slice
+        )
         window_post_cost_returns = apply_turnover_cost(
             window_pre_cost_returns,
             signal_turnover(window_signal),
@@ -294,12 +329,12 @@ def walk_forward(
                 index=window_index,
                 train_start=train_slice.index.min(),
                 train_end=train_slice.index.max(),
-                forecast_start=forecast_slice.index.min(),
-                forecast_end=forecast_slice.index.max(),
+                forecast_start=effective_forecast_slice.index.min(),
+                forecast_end=effective_forecast_slice.index.max(),
                 chosen_k=chosen_k,
                 log_likelihood=fitted.log_likelihood,
                 n_train_obs=int(train_slice.shape[0]),
-                n_forecast_obs=int(forecast_slice.shape[0]),
+                n_forecast_obs=int(effective_forecast_slice.shape[0]),
                 summary=window_summary,
             )
         )
@@ -373,3 +408,26 @@ def _summary_row(
         "max_drawdown": max_drawdown(strategy_returns),
         "hit_rate": hit_rate(strategy_returns),
     }
+
+
+def _expected_return_index(
+    signal: pd.Series,
+    windows: tuple[WalkForwardWindow, ...],
+) -> pd.Index:
+    parts: list[pd.Index] = []
+    for window in windows:
+        window_signal = signal.loc[window.forecast_start : window.forecast_end]
+        if window_signal.shape[0] != window.n_forecast_obs:
+            raise ValueError(
+                "signal does not match window forecast spans; "
+                f"window {window.index} expected {window.n_forecast_obs} observations, "
+                f"got {window_signal.shape[0]}."
+            )
+        parts.append(window_signal.index[1:])
+
+    if not parts:
+        return pd.Index([])
+    expected = parts[0]
+    for index in parts[1:]:
+        expected = expected.append(index)
+    return expected

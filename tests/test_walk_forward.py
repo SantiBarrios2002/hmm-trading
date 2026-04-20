@@ -126,8 +126,6 @@ def test_walk_forward_config_rejects_invalid_values() -> None:
         WalkForwardConfig(t_days=0)
     with pytest.raises(ValueError, match="retrain_every_days"):
         WalkForwardConfig(retrain_every_days=0)
-    with pytest.raises(ValueError, match=">= t_days"):
-        WalkForwardConfig(t_days=2, retrain_every_days=1)
     with pytest.raises(ValueError, match="n_iter"):
         WalkForwardConfig(n_iter=0)
     with pytest.raises(ValueError, match="tol"):
@@ -287,6 +285,23 @@ def test_walk_forward_retrain_frequency_is_configurable() -> None:
     forecast_dates = [window.forecast_start.date() for window in result.windows]
     all_dates = sorted(set(returns.index.date))
     assert forecast_dates == [all_dates[5], all_dates[7], all_dates[9]]
+
+
+def test_walk_forward_retrain_cadence_is_independent_from_forecast_horizon() -> None:
+    returns = _regime_switching_returns(n_days=10, bars_per_day=20, seed=11)
+    config = WalkForwardConfig(
+        h_days=5,
+        t_days=2,
+        retrain_every_days=1,
+        k_values=(2,),
+        random_state=0,
+    )
+
+    result = walk_forward(returns, config)
+
+    assert len(result.windows) == 4
+    assert result.windows[1].train_start.date() > result.windows[0].train_start.date()
+    assert result.signal.index.is_unique
 
 
 def test_walk_forward_summary_matches_return_series_metrics() -> None:
@@ -522,4 +537,36 @@ def test_walk_forward_result_validates_fields() -> None:
             pre_cost_returns=result.pre_cost_returns,
             post_cost_returns=result.post_cost_returns,
             summary=result.summary.to_dict(),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="share the same index"):
+        WalkForwardResult(
+            config=result.config,
+            windows=result.windows,
+            signal=result.signal,
+            pre_cost_returns=result.pre_cost_returns,
+            post_cost_returns=pd.Series(
+                result.post_cost_returns.to_numpy(),
+                index=result.post_cost_returns.index.shift(1, freq="min"),
+            ),
+            summary=result.summary,
+        )
+    with pytest.raises(ValueError, match="len\\(signal\\) - len\\(windows\\)"):
+        WalkForwardResult(
+            config=result.config,
+            windows=result.windows,
+            signal=result.signal,
+            pre_cost_returns=result.pre_cost_returns.iloc[:-1],
+            post_cost_returns=result.post_cost_returns.iloc[:-1],
+            summary=result.summary,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        bad_pre_cost = result.pre_cost_returns.copy()
+        bad_pre_cost.iloc[0] = np.nan
+        WalkForwardResult(
+            config=result.config,
+            windows=result.windows,
+            signal=result.signal,
+            pre_cost_returns=bad_pre_cost,
+            post_cost_returns=result.post_cost_returns,
+            summary=result.summary,
         )
