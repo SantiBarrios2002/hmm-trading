@@ -57,38 +57,69 @@ def test_build_fixtures_is_idempotent(tmp_path: Path) -> None:
     """Running the script twice against the same parquet produces byte-identical CSVs."""
     from hft_hmm.data import load_databento_parquet  # noqa: F401 -- ensures install is present
 
+    baseline_sample = TRACKED_SAMPLE.read_bytes()
+    baseline_month = TRACKED_MONTH.read_bytes()
+    sample_output = tmp_path / "tests" / "fixtures" / "es_1min_sample.csv"
+    month_output = tmp_path / "tests" / "fixtures" / "es_1min_month.csv"
+
     completed = subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT)],
+        [
+            sys.executable,
+            str(BUILD_SCRIPT),
+            "--sample-output",
+            str(sample_output),
+            "--month-output",
+            str(month_output),
+        ],
         check=True,
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
     )
-    sample_after_first = TRACKED_SAMPLE.read_bytes()
-    month_after_first = TRACKED_MONTH.read_bytes()
+    sample_after_first = sample_output.read_bytes()
+    month_after_first = month_output.read_bytes()
 
     subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT)],
+        [
+            sys.executable,
+            str(BUILD_SCRIPT),
+            "--sample-output",
+            str(sample_output),
+            "--month-output",
+            str(month_output),
+        ],
         check=True,
         capture_output=True,
         cwd=REPO_ROOT,
     )
-    assert TRACKED_SAMPLE.read_bytes() == sample_after_first
-    assert TRACKED_MONTH.read_bytes() == month_after_first
-    assert "Wrote tests/fixtures/es_1min_sample.csv" in completed.stdout
+    assert sample_output.read_bytes() == sample_after_first
+    assert month_output.read_bytes() == month_after_first
+    assert TRACKED_SAMPLE.read_bytes() == baseline_sample
+    assert TRACKED_MONTH.read_bytes() == baseline_month
+    assert "Wrote" in completed.stdout
+    assert "es_1min_sample.csv" in completed.stdout
 
 
 @needs_source_parquet
-def test_build_fixtures_matches_tracked_bytes() -> None:
+def test_build_fixtures_matches_tracked_bytes(tmp_path: Path) -> None:
     """The committed CSVs are the bit-for-bit output of the current script."""
     baseline_sample = TRACKED_SAMPLE.read_bytes()
     baseline_month = TRACKED_MONTH.read_bytes()
+    sample_output = tmp_path / "tests" / "fixtures" / "es_1min_sample.csv"
+    month_output = tmp_path / "tests" / "fixtures" / "es_1min_month.csv"
 
     subprocess.run(
-        [sys.executable, str(BUILD_SCRIPT)],
+        [
+            sys.executable,
+            str(BUILD_SCRIPT),
+            "--sample-output",
+            str(sample_output),
+            "--month-output",
+            str(month_output),
+        ],
         check=True,
         capture_output=True,
         cwd=REPO_ROOT,
     )
-    assert TRACKED_SAMPLE.read_bytes() == baseline_sample
-    assert TRACKED_MONTH.read_bytes() == baseline_month
+    assert sample_output.read_bytes() == baseline_sample
+    assert month_output.read_bytes() == baseline_month

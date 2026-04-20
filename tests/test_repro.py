@@ -11,18 +11,28 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from hft_hmm.config import DataSourceConfig, ExperimentConfig, run_id
+from hft_hmm.config import DataSourceConfig, ExperimentConfig, compute_file_sha256, run_id
 from hft_hmm.core import EVALUATION_LAYER
-from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, run_experiment
-from hft_hmm.experiments.walk_forward import WalkForwardConfig
+from hft_hmm.experiments.runner import (
+    DATA_FINGERPRINT_MISMATCH_WARNING,
+    NON_REPRODUCIBLE_WARNING,
+    run_experiment,
+)
+from hft_hmm.experiments.walk_forward import (
+    WalkForwardConfig,
+    WalkForwardResult,
+    WalkForwardWindow,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
 MONTH_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_csv.yaml"
 REPRO_SCRIPT = REPO_ROOT / "scripts" / "repro.py"
+SAMPLE_SHA256 = compute_file_sha256(SAMPLE_FIXTURE)
 
 
 def _csv_config(path: Path = SAMPLE_FIXTURE, **wf_overrides) -> ExperimentConfig:
@@ -38,6 +48,7 @@ def _csv_config(path: Path = SAMPLE_FIXTURE, **wf_overrides) -> ExperimentConfig
         walk_forward=wf,
         cost_bps_per_turnover=0.5,
         notes="repro-test",
+        sha256=compute_file_sha256(path),
     )
 
 
@@ -99,6 +110,25 @@ def test_run_experiment_overwrites_with_force(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_run_experiment_force_preserves_previous_run_if_replacement_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _csv_config()
+    first = run_experiment(config, runs_root=tmp_path)
+    marker = first.directory / "marker.txt"
+    marker.write_text("keep-me")
+
+    def broken_loader(path):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("hft_hmm.experiments.runner.load_csv_market_data", broken_loader)
+    with pytest.raises(RuntimeError, match="boom"):
+        run_experiment(config, runs_root=tmp_path, force=True)
+
+    assert first.directory.is_dir()
+    assert marker.read_text() == "keep-me"
+
+
 def test_run_experiment_rejects_non_config(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="config must be an ExperimentConfig"):
         run_experiment({"frequency": "1min"}, runs_root=tmp_path)  # type: ignore[arg-type]
@@ -138,6 +168,88 @@ def test_run_experiment_emits_non_reproducible_warning_for_yfinance(
 
     metrics = json.loads((artifacts.directory / "metrics.json").read_text())
     assert metrics["reproducible"] is False
+
+
+def test_run_experiment_marks_mismatched_file_digest_non_reproducible(
+    tmp_path: Path,
+) -> None:
+    cfg = ExperimentConfig(
+        data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE)),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(h_days=2, t_days=1, k_values=(2,)),
+        sha256="0" * 64,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        artifacts = run_experiment(cfg, runs_root=tmp_path)
+
+    messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+    assert any(
+        DATA_FINGERPRINT_MISMATCH_WARNING.format(path=str(SAMPLE_FIXTURE)) == message
+        for message in messages
+    )
+
+    metrics = json.loads((artifacts.directory / "metrics.json").read_text())
+    assert metrics["reproducible"] is False
+
+
+def test_run_experiment_serializes_missing_metrics_as_json_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = pd.date_range("2024-01-02 00:00:00", periods=2, freq="1min", tz="UTC")
+    summary = pd.DataFrame(
+        [
+            {
+                "n_periods": 1,
+                "cost_bps_per_turnover": 0.0,
+                "cumulative_return": 0.01,
+                "sharpe_ratio": np.nan,
+                "max_drawdown": 0.0,
+                "hit_rate": 1.0,
+            },
+            {
+                "n_periods": 1,
+                "cost_bps_per_turnover": 0.0,
+                "cumulative_return": 0.01,
+                "sharpe_ratio": np.nan,
+                "max_drawdown": 0.0,
+                "hit_rate": 1.0,
+            },
+        ],
+        index=pd.Index(["pre-cost", "post-cost"], name="mode"),
+    )
+    fake_result = WalkForwardResult(
+        config=WalkForwardConfig(h_days=1, t_days=1, k_values=(2,)),
+        windows=(
+            WalkForwardWindow(
+                index=0,
+                train_start=index[0] - pd.Timedelta(minutes=2),
+                train_end=index[0] - pd.Timedelta(minutes=1),
+                forecast_start=index[0],
+                forecast_end=index[1],
+                chosen_k=2,
+                log_likelihood=float("nan"),
+                n_train_obs=2,
+                n_forecast_obs=2,
+                summary=summary,
+            ),
+        ),
+        signal=pd.Series([1, 1], index=index, name="signal"),
+        pre_cost_returns=pd.Series([0.01], index=index[1:], name="strategy_return"),
+        post_cost_returns=pd.Series([0.01], index=index[1:], name="strategy_return_post_cost"),
+        summary=summary,
+    )
+
+    monkeypatch.setattr("hft_hmm.experiments.runner.walk_forward", lambda *args, **kwargs: fake_result)
+
+    artifacts = run_experiment(_csv_config(), runs_root=tmp_path)
+    metrics = json.loads((artifacts.directory / "metrics.json").read_text())
+    log = json.loads((artifacts.directory / "log.jsonl").read_text().strip())
+
+    assert metrics["summary"]["pre-cost"]["sharpe_ratio"] is None
+    assert log["log_likelihood"] is None
+    assert log["summary"]["pre-cost"]["sharpe_ratio"] is None
 
 
 def test_run_experiment_is_deterministic(tmp_path: Path) -> None:

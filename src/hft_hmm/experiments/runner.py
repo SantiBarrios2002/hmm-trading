@@ -13,7 +13,11 @@ References: §4.4 reproducible simulation artifacts (evaluation layer)
 from __future__ import annotations
 
 import json
+import math
+import os
 import shutil
+import tempfile
+import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +25,7 @@ from typing import Any, Final
 
 import pandas as pd
 
-from hft_hmm.config.experiment_config import ExperimentConfig, run_id
+from hft_hmm.config.experiment_config import ExperimentConfig, compute_file_sha256, run_id
 from hft_hmm.core import EVALUATION_LAYER
 from hft_hmm.data import (
     load_csv_market_data,
@@ -35,6 +39,10 @@ __category__: Final[str] = EVALUATION_LAYER
 
 NON_REPRODUCIBLE_WARNING: Final[str] = (
     "yfinance data may drift across vendor updates; re-runs may not match bit-for-bit."
+)
+DATA_FINGERPRINT_MISMATCH_WARNING: Final[str] = (
+    "Configured sha256 does not match file contents at {path}; "
+    "the run will be marked non-reproducible."
 )
 
 _YFINANCE_INTERVAL: Final[dict[str, str]] = {
@@ -78,10 +86,7 @@ def run_experiment(
             raise FileExistsError(
                 f"Run directory already exists at {run_dir}; pass force=True to overwrite."
             )
-        shutil.rmtree(run_dir)
-
-    if not config.data.is_reproducible:
-        warnings.warn(NON_REPRODUCIBLE_WARNING, UserWarning, stacklevel=2)
+    reproducible = _validate_reproducibility(config)
 
     returns = _load_returns(config)
     wf_result = walk_forward(
@@ -90,11 +95,29 @@ def run_experiment(
         cost_bps_per_turnover=config.cost_bps_per_turnover,
     )
 
-    run_dir.mkdir(parents=True, exist_ok=False)
-    (run_dir / "figures").mkdir()
-    (run_dir / "config.yaml").write_bytes(config.to_yaml_bytes())
-    _write_metrics(run_dir / "metrics.json", config, experiment_id, wf_result)
-    _write_log(run_dir / "log.jsonl", wf_result)
+    runs_root_path.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(tempfile.mkdtemp(prefix=f"{experiment_id}.tmp-", dir=runs_root_path))
+    backup_dir: Path | None = None
+    try:
+        _write_artifacts(staging_dir, config, experiment_id, wf_result, reproducible=reproducible)
+
+        if run_dir.exists():
+            backup_dir = run_dir.with_name(f"{run_dir.name}.backup-{uuid.uuid4().hex}")
+            os.replace(run_dir, backup_dir)
+
+        try:
+            os.replace(staging_dir, run_dir)
+        except Exception:
+            if backup_dir is not None and backup_dir.exists():
+                os.replace(backup_dir, run_dir)
+            raise
+
+        if backup_dir is not None:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+    except Exception:
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
     return RunArtifacts(
         run_id=experiment_id,
@@ -130,22 +153,56 @@ def _load_returns(config: ExperimentConfig) -> pd.Series:
     return returns
 
 
+def _validate_reproducibility(config: ExperimentConfig) -> bool:
+    if not config.is_reproducible:
+        warnings.warn(NON_REPRODUCIBLE_WARNING, UserWarning, stacklevel=2)
+        return False
+
+    assert config.data.path is not None
+    assert config.sha256 is not None
+    actual_sha256 = compute_file_sha256(config.data.path)
+    if actual_sha256 != config.sha256:
+        warnings.warn(
+            DATA_FINGERPRINT_MISMATCH_WARNING.format(path=config.data.path),
+            UserWarning,
+            stacklevel=2,
+        )
+        return False
+    return True
+
+
+def _write_artifacts(
+    run_dir: Path,
+    config: ExperimentConfig,
+    experiment_id: str,
+    result: WalkForwardResult,
+    *,
+    reproducible: bool,
+) -> None:
+    (run_dir / "figures").mkdir()
+    (run_dir / "config.yaml").write_bytes(config.to_yaml_bytes())
+    _write_metrics(run_dir / "metrics.json", config, experiment_id, result, reproducible=reproducible)
+    _write_log(run_dir / "log.jsonl", result)
+
+
 def _write_metrics(
     path: Path,
     config: ExperimentConfig,
     experiment_id: str,
     result: WalkForwardResult,
+    *,
+    reproducible: bool,
 ) -> None:
     payload: dict[str, Any] = {
         "run_id": experiment_id,
-        "reproducible": config.data.is_reproducible,
+        "reproducible": reproducible,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
         "n_windows": len(result.windows),
         "n_forecast_obs": int(result.signal.shape[0]),
         "summary": _summary_to_payload(result.summary),
     }
     path.write_text(
-        json.dumps(payload, sort_keys=True, indent=2) + "\n",
+        json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
 
@@ -162,26 +219,30 @@ def _write_log(path: Path, result: WalkForwardResult) -> None:
                     "forecast_start": window.forecast_start.isoformat(),
                     "forecast_end": window.forecast_end.isoformat(),
                     "chosen_k": int(window.chosen_k),
-                    "log_likelihood": float(window.log_likelihood),
+                    "log_likelihood": _json_safe(window.log_likelihood),
                     "n_train_obs": int(window.n_train_obs),
                     "n_forecast_obs": int(window.n_forecast_obs),
                     "summary": _summary_to_payload(window.summary),
                 },
                 sort_keys=True,
+                allow_nan=False,
             )
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _summary_to_payload(summary: pd.DataFrame) -> dict[str, dict[str, float]]:
+def _summary_to_payload(summary: pd.DataFrame) -> dict[str, dict[str, float | None]]:
     """Convert a per-mode summary DataFrame into a JSON-safe nested dict."""
-    payload: dict[str, dict[str, float]] = {}
+    payload: dict[str, dict[str, float | None]] = {}
     for mode, row in summary.iterrows():
         payload[str(mode)] = {str(col): _json_safe(row[col]) for col in summary.columns}
     return payload
 
 
-def _json_safe(value: Any) -> float:
+def _json_safe(value: Any) -> float | None:
     if pd.isna(value):
-        return float("nan")
-    return float(value)
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        return None
+    return numeric

@@ -11,10 +11,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hft_hmm.config import DataSourceConfig, ExperimentConfig, run_id
+from hft_hmm.config import DataSourceConfig, ExperimentConfig, compute_file_sha256, run_id
 from hft_hmm.config.experiment_config import EXPERIMENT_CONFIG_REFERENCE
 from hft_hmm.core import EVALUATION_LAYER
 from hft_hmm.experiments.walk_forward import WalkForwardConfig
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
+SAMPLE_SHA256 = compute_file_sha256(SAMPLE_FIXTURE)
+PLACEHOLDER_SHA256 = "0" * 64
 
 
 def _wf() -> WalkForwardConfig:
@@ -54,12 +59,16 @@ def test_experiment_config_module_declares_evaluation_layer_category() -> None:
     ids=["csv", "databento_parquet", "yfinance"],
 )
 def test_experiment_config_roundtrip_preserves_fields(data_factory, tmp_path: Path) -> None:
+    sha256 = None if data_factory is _yfinance_data else SAMPLE_SHA256
+    if data_factory is _parquet_data:
+        sha256 = PLACEHOLDER_SHA256
     original = ExperimentConfig(
         data=data_factory(),
         frequency="1min",
         walk_forward=_wf(),
         cost_bps_per_turnover=1.25,
         notes="roundtrip",
+        sha256=sha256,
     )
     path = tmp_path / "cfg.yaml"
     original.to_yaml(path)
@@ -74,6 +83,7 @@ def test_experiment_config_yaml_is_deterministic(tmp_path: Path) -> None:
         walk_forward=_wf(),
         cost_bps_per_turnover=0.5,
         notes="alpha",
+        sha256=SAMPLE_SHA256,
     )
     assert cfg.to_yaml_bytes() == cfg.to_yaml_bytes()
 
@@ -84,6 +94,7 @@ def test_experiment_config_yaml_round_trip_is_fixed_point(tmp_path: Path) -> Non
         frequency="1min",
         walk_forward=_wf(),
         notes="fixed-point",
+        sha256=SAMPLE_SHA256,
     )
     first = tmp_path / "a.yaml"
     second = tmp_path / "b.yaml"
@@ -135,12 +146,33 @@ def test_data_source_config_is_reproducible_flag() -> None:
     assert _yfinance_data().is_reproducible is False
 
 
+def test_experiment_config_is_reproducible_flag() -> None:
+    assert (
+        ExperimentConfig(
+            data=_csv_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+            sha256=SAMPLE_SHA256,
+        ).is_reproducible
+        is True
+    )
+    assert (
+        ExperimentConfig(
+            data=_yfinance_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+        ).is_reproducible
+        is False
+    )
+
+
 def test_experiment_config_rejects_bad_frequency() -> None:
     with pytest.raises(ValueError, match="frequency must be one of"):
         ExperimentConfig(
             data=_csv_data(),
             frequency="2min",  # type: ignore[arg-type]
             walk_forward=_wf(),
+            sha256=SAMPLE_SHA256,
         )
 
 
@@ -151,6 +183,49 @@ def test_experiment_config_rejects_negative_cost() -> None:
             frequency="1min",
             walk_forward=_wf(),
             cost_bps_per_turnover=-0.1,
+            sha256=SAMPLE_SHA256,
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_experiment_config_rejects_non_finite_cost(value: float) -> None:
+    with pytest.raises(ValueError, match="cost_bps_per_turnover must be finite"):
+        ExperimentConfig(
+            data=_csv_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+            cost_bps_per_turnover=value,
+            sha256=SAMPLE_SHA256,
+        )
+
+
+def test_experiment_config_requires_sha256_for_file_backed_data() -> None:
+    with pytest.raises(ValueError, match="requires sha256"):
+        ExperimentConfig(
+            data=_csv_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+        )
+
+
+@pytest.mark.parametrize("sha256", ["abc", "g" * 64])
+def test_experiment_config_rejects_invalid_sha256(sha256: str) -> None:
+    with pytest.raises(ValueError, match="64-character hexadecimal digest"):
+        ExperimentConfig(
+            data=_csv_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+            sha256=sha256,
+        )
+
+
+def test_experiment_config_rejects_sha256_for_yfinance() -> None:
+    with pytest.raises(ValueError, match="must not set sha256"):
+        ExperimentConfig(
+            data=_yfinance_data(),
+            frequency="1min",
+            walk_forward=_wf(),
+            sha256=SAMPLE_SHA256,
         )
 
 
@@ -160,12 +235,14 @@ def test_experiment_config_rejects_wrong_types() -> None:
             data={"kind": "csv", "path": "x.csv"},  # type: ignore[arg-type]
             frequency="1min",
             walk_forward=_wf(),
+            sha256=SAMPLE_SHA256,
         )
     with pytest.raises(TypeError, match="walk_forward must be a WalkForwardConfig"):
         ExperimentConfig(
             data=_csv_data(),
             frequency="1min",
             walk_forward={"h_days": 5},  # type: ignore[arg-type]
+            sha256=SAMPLE_SHA256,
         )
     with pytest.raises(TypeError, match="cost_bps_per_turnover must be a real number"):
         ExperimentConfig(
@@ -173,6 +250,7 @@ def test_experiment_config_rejects_wrong_types() -> None:
             frequency="1min",
             walk_forward=_wf(),
             cost_bps_per_turnover=True,  # type: ignore[arg-type]
+            sha256=SAMPLE_SHA256,
         )
     with pytest.raises(TypeError, match="notes must be a str"):
         ExperimentConfig(
@@ -180,6 +258,7 @@ def test_experiment_config_rejects_wrong_types() -> None:
             frequency="1min",
             walk_forward=_wf(),
             notes=42,  # type: ignore[arg-type]
+            sha256=SAMPLE_SHA256,
         )
 
 
@@ -190,6 +269,7 @@ def test_run_id_is_12_hex_chars_and_stable() -> None:
         walk_forward=_wf(),
         cost_bps_per_turnover=0.5,
         notes="stable",
+        sha256=SAMPLE_SHA256,
     )
     first = run_id(cfg)
     assert len(first) == 12
@@ -201,7 +281,12 @@ def test_run_id_stable_across_subprocess(tmp_path: Path) -> None:
     script = tmp_path / "compute.py"
     script.write_text(textwrap.dedent("""
             import sys
-            from hft_hmm.config import DataSourceConfig, ExperimentConfig, run_id
+            from hft_hmm.config import (
+                DataSourceConfig,
+                ExperimentConfig,
+                compute_file_sha256,
+                run_id,
+            )
             from hft_hmm.experiments.walk_forward import WalkForwardConfig
 
             cfg = ExperimentConfig(
@@ -210,6 +295,7 @@ def test_run_id_stable_across_subprocess(tmp_path: Path) -> None:
                 walk_forward=WalkForwardConfig(h_days=5, t_days=1, k_values=(2,), random_state=7),
                 cost_bps_per_turnover=0.5,
                 notes="stable",
+                sha256=compute_file_sha256("tests/fixtures/es_1min_sample.csv"),
             )
             sys.stdout.write(run_id(cfg))
             """))
@@ -226,6 +312,7 @@ def test_run_id_stable_across_subprocess(tmp_path: Path) -> None:
             walk_forward=_wf(),
             cost_bps_per_turnover=0.5,
             notes="stable",
+            sha256=SAMPLE_SHA256,
         )
     )
     assert completed.stdout == in_process_id
@@ -237,27 +324,66 @@ def test_run_id_changes_when_random_state_changes() -> None:
         frequency="1min",
         walk_forward=_wf(),
         cost_bps_per_turnover=0.5,
+        sha256=SAMPLE_SHA256,
     )
     perturbed = ExperimentConfig(
         data=_csv_data(),
         frequency="1min",
         walk_forward=WalkForwardConfig(h_days=5, t_days=1, k_values=(2,), random_state=8),
         cost_bps_per_turnover=0.5,
+        sha256=SAMPLE_SHA256,
     )
     assert run_id(base) != run_id(perturbed)
 
 
 def test_run_id_changes_when_cost_changes() -> None:
-    base = ExperimentConfig(data=_csv_data(), frequency="1min", walk_forward=_wf())
+    base = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        sha256=SAMPLE_SHA256,
+    )
     perturbed = ExperimentConfig(
-        data=_csv_data(), frequency="1min", walk_forward=_wf(), cost_bps_per_turnover=1.0
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        cost_bps_per_turnover=1.0,
+        sha256=SAMPLE_SHA256,
     )
     assert run_id(base) != run_id(perturbed)
 
 
 def test_run_id_changes_when_notes_change() -> None:
-    base = ExperimentConfig(data=_csv_data(), frequency="1min", walk_forward=_wf(), notes="A")
-    perturbed = ExperimentConfig(data=_csv_data(), frequency="1min", walk_forward=_wf(), notes="B")
+    base = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        notes="A",
+        sha256=SAMPLE_SHA256,
+    )
+    perturbed = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        notes="B",
+        sha256=SAMPLE_SHA256,
+    )
+    assert run_id(base) != run_id(perturbed)
+
+
+def test_run_id_changes_when_sha256_changes() -> None:
+    base = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        sha256=SAMPLE_SHA256,
+    )
+    perturbed = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        sha256=PLACEHOLDER_SHA256,
+    )
     assert run_id(base) != run_id(perturbed)
 
 
@@ -287,6 +413,7 @@ def test_from_yaml_reads_yaml_written_externally(tmp_path: Path) -> None:
                 },
                 "frequency": "1min",
                 "cost_bps_per_turnover": 2.0,
+                "sha256": SAMPLE_SHA256,
                 "walk_forward": {
                     "h_days": 3,
                     "t_days": 1,
@@ -305,3 +432,4 @@ def test_from_yaml_reads_yaml_written_externally(tmp_path: Path) -> None:
     assert cfg.walk_forward.k_values == (2, 3)
     assert cfg.cost_bps_per_turnover == 2.0
     assert cfg.notes == "external writer"
+    assert cfg.sha256 == SAMPLE_SHA256

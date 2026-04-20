@@ -13,6 +13,7 @@ References: §4.4 reproducible simulation artifacts (evaluation layer)
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -30,6 +31,7 @@ EXPERIMENT_CONFIG_REFERENCE: Final[PaperReference] = reference(
 DataSourceKind = Literal["csv", "databento_parquet", "yfinance"]
 _DATA_SOURCE_KINDS: Final[tuple[str, ...]] = ("csv", "databento_parquet", "yfinance")
 _REPRODUCIBLE_KINDS: Final[frozenset[str]] = frozenset({"csv", "databento_parquet"})
+_SHA256_HEXDIGEST_LENGTH: Final[int] = 64
 
 Frequency = Literal["1min", "5min", "1D"]
 _FREQUENCIES: Final[tuple[str, ...]] = ("1min", "5min", "1D")
@@ -76,7 +78,7 @@ class DataSourceConfig:
 
     @property
     def is_reproducible(self) -> bool:
-        """``True`` when the source is a local immutable file, ``False`` for yfinance."""
+        """``True`` for file-backed kinds; full reproducibility also needs a fingerprint."""
         return self.kind in _REPRODUCIBLE_KINDS
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +115,7 @@ class ExperimentConfig:
     walk_forward: WalkForwardConfig
     cost_bps_per_turnover: float = 0.0
     notes: str = ""
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.data, DataSourceConfig):
@@ -130,13 +133,42 @@ class ExperimentConfig:
                 "cost_bps_per_turnover must be a real number, got "
                 f"{type(self.cost_bps_per_turnover).__name__}."
             )
-        if self.cost_bps_per_turnover < 0.0:
+        cost_bps_per_turnover = float(self.cost_bps_per_turnover)
+        if not math.isfinite(cost_bps_per_turnover):
+            raise ValueError(
+                "cost_bps_per_turnover must be finite and non-negative, "
+                f"got {self.cost_bps_per_turnover!r}."
+            )
+        if cost_bps_per_turnover < 0.0:
             raise ValueError(
                 "cost_bps_per_turnover must be non-negative, "
                 f"got {self.cost_bps_per_turnover!r}."
             )
         if not isinstance(self.notes, str):
             raise TypeError(f"notes must be a str, got {type(self.notes).__name__}.")
+        if self.data.is_reproducible:
+            if self.sha256 is None:
+                raise ValueError("ExperimentConfig for file-backed data requires sha256.")
+            if not isinstance(self.sha256, str):
+                raise TypeError(f"sha256 must be a str, got {type(self.sha256).__name__}.")
+            normalized_sha256 = self.sha256.lower()
+            if len(normalized_sha256) != _SHA256_HEXDIGEST_LENGTH or any(
+                char not in "0123456789abcdef" for char in normalized_sha256
+            ):
+                raise ValueError(
+                    "sha256 must be a 64-character hexadecimal digest, "
+                    f"got {self.sha256!r}."
+                )
+            object.__setattr__(self, "sha256", normalized_sha256)
+        elif self.sha256 is not None:
+            raise ValueError("ExperimentConfig for non-file-backed data must not set sha256.")
+
+        object.__setattr__(self, "cost_bps_per_turnover", cost_bps_per_turnover)
+
+    @property
+    def is_reproducible(self) -> bool:
+        """``True`` when the run is file-backed and pinned to a specific file digest."""
+        return self.data.is_reproducible and self.sha256 is not None
 
     def to_dict(self) -> dict[str, Any]:
         # retrain_every_days is always a concrete int after WalkForwardConfig.__post_init__
@@ -158,6 +190,7 @@ class ExperimentConfig:
                 "tol": float(self.walk_forward.tol),
             },
             "notes": self.notes,
+            "sha256": self.sha256,
         }
 
     @classmethod
@@ -178,6 +211,7 @@ class ExperimentConfig:
             walk_forward=walk_forward,
             cost_bps_per_turnover=float(data.get("cost_bps_per_turnover", 0.0)),
             notes=str(data.get("notes", "")),
+            sha256=data.get("sha256"),
         )
 
     def to_yaml_bytes(self) -> bytes:
@@ -212,6 +246,15 @@ def run_id(config: ExperimentConfig) -> str:
     if not isinstance(config, ExperimentConfig):
         raise TypeError(f"config must be an ExperimentConfig, got {type(config).__name__}.")
     return hashlib.sha256(config.to_yaml_bytes()).hexdigest()[:12]
+
+
+def compute_file_sha256(path: str | Path) -> str:
+    """Return the SHA-256 hex digest for a local file."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _optional_int(value: Any) -> int | None:

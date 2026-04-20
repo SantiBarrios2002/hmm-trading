@@ -19,6 +19,7 @@ which is the expected behavior on a fresh clone without databento data.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import sys
 from pathlib import Path
@@ -26,14 +27,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hft_hmm.data import load_databento_parquet
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_PARQUET = (
+DEFAULT_SOURCE_PARQUET = (
     REPO_ROOT / "data" / "databento" / "databento" / "ES_c_0_ohlcv-1m_2024-01-01_2024-02-01.parquet"
 )
-OUTPUT_SAMPLE = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
-OUTPUT_MONTH = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
+DEFAULT_OUTPUT_SAMPLE = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
+DEFAULT_OUTPUT_MONTH = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
 
 SYMBOL = "ES.c.0"
 TRADING_TZ = "America/Chicago"
@@ -48,6 +47,8 @@ def build_fixture(parquet_path: Path, *, sample_trading_days: int | None) -> pd.
     When ``sample_trading_days`` is given, the result is trimmed to the first
     N distinct Chicago trading dates after the session-window filter.
     """
+    from hft_hmm.data import load_databento_parquet
+
     frame = load_databento_parquet(parquet_path, symbol=SYMBOL)
     chicago_ts = frame["timestamp"].dt.tz_convert(TRADING_TZ)
     chicago_time = chicago_ts.dt.time
@@ -76,28 +77,61 @@ def write_fixture(frame: pd.DataFrame, output: Path) -> None:
     round-trippable through :func:`pandas.to_datetime(..., utc=True)`.
     """
     formatted = frame.loc[:, ["timestamp", "price", "volume"]].copy()
-    formatted["timestamp"] = frame["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    timestamp = pd.to_datetime(frame["timestamp"], errors="raise", utc=False)
+    if timestamp.dt.tz is None:
+        raise ValueError("timestamp column must be tz-aware before exporting fixtures.")
+    formatted["timestamp"] = timestamp.dt.tz_convert("UTC").dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
     output.parent.mkdir(parents=True, exist_ok=True)
     formatted.to_csv(output, index=False, lineterminator="\n")
 
 
-def main() -> int:
-    if not SOURCE_PARQUET.exists():
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Build canonical CSV fixtures from the ES January 2024 Databento parquet.",
+    )
+    parser.add_argument(
+        "--source-parquet",
+        type=Path,
+        default=DEFAULT_SOURCE_PARQUET,
+        help="Source Databento parquet to carve fixtures from.",
+    )
+    parser.add_argument(
+        "--sample-output",
+        type=Path,
+        default=DEFAULT_OUTPUT_SAMPLE,
+        help="Output CSV for the 5-trading-day sample fixture.",
+    )
+    parser.add_argument(
+        "--month-output",
+        type=Path,
+        default=DEFAULT_OUTPUT_MONTH,
+        help="Output CSV for the full-month fixture.",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.source_parquet.exists():
         print(
-            f"Source parquet not found at {SOURCE_PARQUET}. "
+            f"Source parquet not found at {args.source_parquet}. "
             "Place the databento ES January 2024 slice there to rebuild fixtures.",
             file=sys.stderr,
         )
         return 0
 
-    sample = build_fixture(SOURCE_PARQUET, sample_trading_days=SAMPLE_TRADING_DAYS)
-    month = build_fixture(SOURCE_PARQUET, sample_trading_days=None)
+    sample = build_fixture(args.source_parquet, sample_trading_days=SAMPLE_TRADING_DAYS)
+    month = build_fixture(args.source_parquet, sample_trading_days=None)
 
-    write_fixture(sample, OUTPUT_SAMPLE)
-    write_fixture(month, OUTPUT_MONTH)
+    write_fixture(sample, args.sample_output)
+    write_fixture(month, args.month_output)
 
-    print(f"Wrote {OUTPUT_SAMPLE.relative_to(REPO_ROOT)} ({len(sample)} rows)")
-    print(f"Wrote {OUTPUT_MONTH.relative_to(REPO_ROOT)} ({len(month)} rows)")
+    print(f"Wrote {_display_path(args.sample_output)} ({len(sample)} rows)")
+    print(f"Wrote {_display_path(args.month_output)} ({len(month)} rows)")
     return 0
 
 

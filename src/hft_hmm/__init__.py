@@ -5,6 +5,7 @@ from hft_hmm.config import (
     EXPERIMENT_CONFIG_REFERENCE,
     DataSourceConfig,
     ExperimentConfig,
+    compute_file_sha256,
     run_id,
 )
 from hft_hmm.core import (
@@ -109,6 +110,7 @@ __all__ = [
     "apply_turnover_cost",
     "bic",
     "compare_state_counts",
+    "compute_file_sha256",
     "compute_log_returns",
     "count_gaussian_hmm_parameters",
     "cumulative_return",
