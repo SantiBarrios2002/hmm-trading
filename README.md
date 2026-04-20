@@ -16,21 +16,19 @@ The intent is a clean, reviewable, academically defensible replication pipeline,
 ## Current Status
 
 The repository currently contains:
-- project metadata and dependency definitions
-- implementation planning documents
-- issue breakdown for staged delivery
-- a minimal `src/hft_hmm/` package scaffold
-- smoke tests that validate the package baseline
-- repository automation for linting and tests
+- canonical market-data loaders and validation for CSV, Databento parquet, and yfinance inputs
+- preprocessing utilities for log returns, resampling, and chronological train/test splits
+- a piecewise linear regression baseline and a Gaussian HMM modeling wrapper
+- model-selection helpers (AIC/BIC) and log-space forward filtering
+- sign-based signal generation plus backtest metrics with turnover-cost accounting
+- a walk-forward experiment runner with deterministic YAML configs, run hashing, and saved artifacts
+- tracked ES 1-minute CSV fixtures for integration tests and reproducibility checks
+- repository automation for tests, linting, formatting, and typing
 
-Planned implementation areas:
-- Gaussian HMM baseline for returns
-- EM / Baum-Welch training
-- filtering and one-step-ahead prediction
-- model selection over hidden-state counts
-- signal generation and evaluation
-- side-information features
-- explicitly labeled approximations where the paper is not replicated exactly
+The core single-asset HMM replication pipeline is implemented through the evaluation layer. The main remaining scope is:
+- side-information features such as volatility ratio and intraday seasonality
+- spline-based predictor fitting and IOHMM-style transition conditioning approximations
+- figure-generation and presentation-oriented project artifacts
 
 ## Repository Contents
 
@@ -40,9 +38,11 @@ Planned implementation areas:
 - [`requirements-dev.txt`](requirements-dev.txt): wrapper for editable install with `.[dev]`
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
 - [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
-- `src/hft_hmm/`: initial package scaffold
-- `tests/`: repository smoke tests
-- `docs/`, `notebooks/`, `scripts/`: reserved project directories
+- `src/hft_hmm/`: data, preprocessing, modeling, inference, strategy, evaluation, and experiment modules
+- `tests/`: unit and integration tests, plus tracked fixtures
+- `configs/`: reproducible experiment YAMLs
+- `scripts/`: fixture-generation and experiment reproduction entry points
+- `docs/`: source paper and supporting documentation
 
 ## Setup
 
@@ -80,6 +80,20 @@ pip install -e ".[dev]"
 
 CI uses `pip install -e ".[dev]"` in the GitHub workflow so there is a single dependency source of truth in [`pyproject.toml`](pyproject.toml). The requirements files remain useful for explicit local runtime or dev installs.
 
+## Baseline Run
+
+Run the example walk-forward experiment with:
+
+```bash
+python scripts/repro.py configs/example_es_csv.yaml
+```
+
+This writes a deterministic artifact directory under `runs/<run_id>/` containing:
+- `config.yaml`
+- `metrics.json`
+- `log.jsonl`
+- `figures/`
+
 ## Development Standards
 
 - Public functions should be tested.
@@ -100,14 +114,17 @@ mypy src
 
 The GitHub Actions workflow now enforces the baseline checks on every push and pull request.
 
-## Initial Package Scaffold
+## Implemented Scope
 
-The current package is intentionally small. It provides:
-- importable package structure under `src/hft_hmm/`
-- version metadata
-- a small project metadata helper used by tests and tooling
+The implemented codebase currently covers:
+- market-data ingestion and schema validation
+- return preprocessing and time-aware splitting
+- Gaussian HMM training and selection over hidden-state counts
+- log-space forward filtering and expected-return inference
+- sign-based trading signals and compact backtest summaries
+- walk-forward retraining experiments with reproducibility metadata and artifact logging
 
-This keeps the repository honest: CI already validates imports, formatting, linting, and test execution before the modeling code lands.
+The code is organized so modules declare whether they are paper-faithful, engineering approximations, or evaluation-layer utilities. This keeps the replication scope explicit where the repository deliberately departs from the paper.
 
 ## Data Note
 
