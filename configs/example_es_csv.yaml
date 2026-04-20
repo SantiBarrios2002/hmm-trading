@@ -1,0 +1,18 @@
+cost_bps_per_turnover: 1.0
+data:
+  end: null
+  kind: csv
+  path: tests/fixtures/es_1min_month.csv
+  start: null
+  symbol: null
+frequency: 1min
+notes: Example ES walk-forward on tracked January 2024 CSV fixture; paper §4.4.
+walk_forward:
+  h_days: 10
+  k_values:
+  - 2
+  n_iter: 100
+  random_state: 0
+  retrain_every_days: 2
+  t_days: 2
+  tol: 0.0001
