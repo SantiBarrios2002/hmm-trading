@@ -20,7 +20,8 @@ dependencies = [
   "hmmlearn>=0.3.2",
   "pyarrow>=15.0",
   "statsmodels>=0.14",
-  "yfinance>=0.2.38"
+  "yfinance>=0.2.38",
+  "pyyaml>=6.0"
 ]
 
 [project.optional-dependencies]
@@ -29,7 +30,8 @@ dev = [
   "pytest-cov>=5.0",
   "black>=24.0",
   "ruff>=0.4",
-  "mypy>=1.9"
+  "mypy>=1.9",
+  "types-PyYAML>=6.0"
 ]
 
 [tool.setuptools]

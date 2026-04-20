@@ -172,6 +172,13 @@ def test_walk_forward_rejects_insufficient_dates() -> None:
         walk_forward(returns, config)
 
 
+def test_walk_forward_rejects_effective_forecast_windows_with_fewer_than_two_observations() -> None:
+    returns = _regime_switching_returns(n_days=10, bars_per_day=1, seed=0)
+    config = WalkForwardConfig(h_days=5, t_days=1, k_values=(2,), random_state=0)
+    with pytest.raises(ValueError, match="effective forecast window must contain at least 2"):
+        walk_forward(returns, config)
+
+
 def test_walk_forward_rejects_non_finite_values() -> None:
     returns = _regime_switching_returns(n_days=10, bars_per_day=10, seed=0)
     returns.iloc[5] = np.nan

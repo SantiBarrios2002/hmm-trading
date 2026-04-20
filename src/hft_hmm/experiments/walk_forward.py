@@ -288,6 +288,14 @@ def walk_forward(
         else:
             effective_forecast_slice = forecast_slice
 
+        if effective_forecast_slice.shape[0] < 2:
+            raise ValueError(
+                "each effective forecast window must contain at least 2 observations so "
+                "one-step-ahead signals can be aligned with realized returns; "
+                f"window {window_index} has {effective_forecast_slice.shape[0]} observation(s) "
+                f"for t_days={config.t_days} and retrain_every_days={retrain_every_days}."
+            )
+
         chosen_k = _select_k(train_slice, config)
         wrapper = GaussianHMMWrapper(
             n_states=chosen_k,

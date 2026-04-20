@@ -1,6 +1,13 @@
 """Core package for the HMM trading project."""
 
 from hft_hmm._version import __version__
+from hft_hmm.config import (
+    EXPERIMENT_CONFIG_REFERENCE,
+    DataSourceConfig,
+    ExperimentConfig,
+    compute_file_sha256,
+    run_id,
+)
 from hft_hmm.core import (
     ALL_CATEGORIES,
     ENGINEERING_APPROXIMATION,
@@ -38,6 +45,7 @@ from hft_hmm.experiments import (
     WalkForwardWindow,
     walk_forward,
 )
+from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, run_experiment
 from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models import (
     GaussianHMMResult,
@@ -71,10 +79,14 @@ __all__ = [
     "BACKTEST_METRICS_REFERENCE",
     "ENGINEERING_APPROXIMATION",
     "EVALUATION_LAYER",
+    "EXPERIMENT_CONFIG_REFERENCE",
+    "NON_REPRODUCIBLE_WARNING",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
     "SIGNAL_REFERENCE",
     "WALK_FORWARD_REFERENCE",
+    "DataSourceConfig",
+    "ExperimentConfig",
     "ForwardFilterResult",
     "GaussianHMMResult",
     "GaussianHMMWrapper",
@@ -87,6 +99,7 @@ __all__ = [
     "PLRSegment",
     "PLRStateSummary",
     "ProjectInfo",
+    "RunArtifacts",
     "StateGrid",
     "WalkForwardConfig",
     "WalkForwardResult",
@@ -97,6 +110,7 @@ __all__ = [
     "apply_turnover_cost",
     "bic",
     "compare_state_counts",
+    "compute_file_sha256",
     "compute_log_returns",
     "count_gaussian_hmm_parameters",
     "cumulative_return",
@@ -115,6 +129,8 @@ __all__ = [
     "plot_selection_curves",
     "reference",
     "resample_prices",
+    "run_experiment",
+    "run_id",
     "sharpe_ratio",
     "sign_signal",
     "signal_turnover",
