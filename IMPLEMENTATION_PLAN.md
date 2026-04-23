@@ -58,7 +58,7 @@ coursework replication. They are listed here so the grader does not mistake
 their absence for oversight.
 
 - **MCMC parameter estimation.** The paper fits Θ by both Baum-Welch and Metropolis-Hastings. This repo uses only Baum-Welch.
-- **MCMC bridge sampling for model selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via MCMC bridge sampling. This repo uses only cross-validation plus AIC/BIC.
+- **MCMC bridge sampling for model selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via MCMC bridge sampling. This repo uses only AIC/BIC.
 - **Asynchronous IOHMM.** The paper sketches an asynchronous variant for mixed-frequency inputs. This repo implements only the synchronous IOHMM approximation.
 - **Multi-security / portfolio backtest.** Evaluation is single-security (ES or an equivalent proxy). No cross-asset construction.
 - **Production execution concerns.** No latency modeling, slippage beyond a flat cost-per-turnover, venue microstructure, or order-book effects.
@@ -118,7 +118,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate C — Baseline modeling scaffold
-**Covers:** Issues 05, 06
+**Covers:** Issues 05, 06, 21
 
 ### Must pass
 - A piecewise linear regression baseline exists and returns interpretable trend summaries.
@@ -133,11 +133,16 @@ A gate passes only when all listed conditions are satisfied.
   - initial distribution
 - Library usage is documented explicitly.
 - Synthetic-data tests show the model can recover regime-like structure at least qualitatively.
+- The wrapper exposes a minimum-variance floor with a documented default tied to the instrument tick size. The paper flags that Gaussian emission variance can collapse below a meaningful threshold on tick-grid data, so this floor must be a first-class configuration knob rather than an implicit backend default.
+- Baum-Welch EM produces a monotone non-decreasing log-likelihood across iterations on every tracked fixture. The chosen backend settings (`tol`, `n_iter`, `min_covar`, init scheme) are documented in the wrapper module docstring. If monotonicity cannot be achieved with `hmmlearn`, the wrapper falls back to a custom log-space forward-backward + M-step, labeled as an engineering approximation.
 
 ### Evidence expected in PR review
 - test fixtures for segmented trends
 - synthetic regime-switching example
 - docstrings referencing the corresponding paper sections
+- a deterministic test asserting monotone EM log-likelihood across iterations
+- a variance-floor test (either clamps to the floor or raises with a documented rule)
+- a clean `scripts/repro.py configs/example_es_csv.yaml` run with no `Model is not converging` warnings
 
 ---
 
@@ -206,7 +211,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate G — Side-information predictors
-**Covers:** Issues 13, 14, 15
+**Covers:** Issues 13, 14, 15, 22
 
 ### Must pass
 - Volatility ratio feature is implemented and tested.
@@ -214,11 +219,16 @@ A gate passes only when all listed conditions are satisfied.
 - Spline fitting exists with a documented Python approximation.
 - The spline interface is deterministic for fixed inputs and configuration.
 - The code labels clearly which parts are paper-faithful and which are approximate.
+- Each side-information predictor (volatility ratio, intraday seasonality) has a standalone walk-forward backtest running on the same experiment rig as the baseline HMM, producing its own `runs/<run_id>/` artifact. This mirrors the paper's §4 structure, where each spline-based predictor is evaluated in isolation before being folded into the IOHMM, and it makes the Gate H comparison interpretable.
+- The standalone-predictor signal path contains no HMM state object; the sign of the predicted return comes from evaluating the fitted spline at `x_t`.
+- If a predictor has no standalone traction on the evaluation window, the result is recorded in the PR notes and then copied into `docs/experiment_log.md` during Gate I so the Gate H outcome can cite it later.
 
 ### Evidence expected in PR review
 - feature construction tests
 - spline fit/evaluate tests
 - at least one visualization produced from script code
+- two tracked `runs/<run_id>/` artifacts (one per predictor) reproducible via `scripts/repro.py`
+- an integration test that the standalone-predictor signal path does not instantiate a Gaussian HMM
 
 ---
 
@@ -243,7 +253,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate I — Figures and presentation support
-**Covers:** Issues 18, 20
+**Covers:** Issues 18, 20, 23
 
 ### Must pass
 - Plotting functions run from scripts, not only notebooks.
@@ -254,12 +264,34 @@ A gate passes only when all listed conditions are satisfied.
   - cumulative returns
 - A concise paper notes document exists.
 - A concise experiment log exists.
-- A short faithful-vs-approximate summary exists for presentation use.
+- `docs/paper_spec.md` exists as a structured table with columns: **component**, **paper says** (with §/figure reference), **repo interpretation**, **deviation type** (paper-faithful / engineering approximation / evaluation-layer / excluded by §2.5), **acceptance risk**. This replaces any informal faithful-vs-approximate prose and is the single document a thesis committee reads to understand interpretive choices.
 
 ### Evidence expected in PR review
 - generated figures stored under `docs/figures/` or equivalent
 - smoke tests for plotting functions
-- reviewed `docs/paper_notes.md` and `docs/experiment_log.md`
+- reviewed `docs/paper_notes.md`, `docs/experiment_log.md`, and `docs/paper_spec.md`
+
+---
+
+## Gate J — Paper-comparison results
+**Covers:** Issue 24
+
+The goal of this gate is not to reproduce the paper's numbers exactly, but to show honestly where the repo lands relative to them and which directional claims it reproduces.
+
+### Must pass
+- `docs/results_vs_paper.md` exists and contains a comparison table with rows for baseline HMM, volatility-ratio IOHMM, seasonality IOHMM, and long-only benchmark, and columns for pre-cost Sharpe, post-cost Sharpe at the documented `cost_bps`, hit rate, cumulative return, chosen `K`, sample window, paper reference (§/table), and repo `run_id`.
+- Every repo number in the table is backed by a live `runs/<run_id>/` artifact reproducible via `scripts/repro.py`. No placeholders.
+- Every gap between a repo number and its paper counterpart is categorized as one of: **data scope** (different window / vendor), **model scope** (§2.5 exclusions), **implementation approximation** (bucketed-A, continuous Gaussian emissions, etc.), or **numerical / stochastic variation**.
+- At least one directional claim from the paper is reproduced or explicitly discussed:
+  - model selection points to `K ∈ {2, 3}`
+  - volatility-conditioned IOHMM outperforms baseline HMM on pre-cost Sharpe
+  - seasonality IOHMM outperforms baseline HMM on pre-cost Sharpe
+- Pre-cost Sharpe of the best side-information variant is reported alongside the paper's reference figure (≈2 per §4.4) with a short honest gap analysis.
+
+### Evidence expected in PR review
+- `docs/results_vs_paper.md` rendered with the full table and gap narrative
+- all `runs/<run_id>/` artifacts cited in the table present under `runs/`
+- one comparison figure under `docs/figures/` produced by Gate I's plotting code (e.g., cumulative-return overlay or Sharpe bar chart)
 
 ---
 
@@ -271,6 +303,7 @@ The project is ready for academic submission when:
 - at least part of Gate G is passed
 - Gate H is passed in approximate form at minimum
 - Gate I is passed well enough to support the oral presentation
+- Gate J produces at least one reproduced directional claim from the paper, with an honest gap analysis
 
 A strong project should pass all gates except perhaps the "full IOHMM" variant, which is optional.
 
@@ -289,5 +322,6 @@ Recommended order for merging PRs:
 7. Gate G
 8. Gate H
 9. Gate I
+10. Gate J
 
 This keeps the repo academically coherent and easy to review.

@@ -48,7 +48,7 @@ Define a reproducible interface for loading market data.
 - add sample fixture data for tests
 
 ### Deliverables
-- `data/io.py`
+- `src/hft_hmm/data.py`
 - fixture dataset for tests
 - schema validation tests
 
@@ -107,7 +107,7 @@ Produce clean log returns and frequency-aware preprocessing utilities.
 - add train/test split helper preserving time order
 
 ### Deliverables
-- `data/preprocessing.py`
+- `src/hft_hmm/preprocessing.py`
 - synthetic-data tests for returns and resampling
 
 ### Acceptance notes
@@ -196,7 +196,7 @@ Compare candidate hidden-state counts and select `K` reproducibly.
 - add plotting helper for selection curves
 
 ### Deliverables
-- `experiments/model_selection.py`
+- `src/hft_hmm/selection/model_selection.py`
 - tests for AIC/BIC logic
 
 ### Acceptance notes
@@ -241,7 +241,7 @@ Turn expected returns into a basic long/short trading signal.
 - document no-cost and cost-aware evaluation modes
 
 ### Deliverables
-- `strategy/signals.py`
+- `src/hft_hmm/strategy/signals.py`
 - alignment and leakage tests
 
 ### Acceptance notes
@@ -266,7 +266,7 @@ Sharpe is honest.
 - document the cost model and default assumptions in the module docstring
 
 ### Deliverables
-- `evaluation/metrics.py`
+- `src/hft_hmm/evaluation/metrics.py`
 - metric edge-case tests (zero-variance, constant signal, single-period)
 - a test that post-cost Sharpe equals pre-cost Sharpe when cost = 0
 
@@ -293,7 +293,7 @@ window and retrain.
 - log per-window: window index, train/test time ranges, chosen `K`, log-likelihood, and metrics summary
 
 ### Deliverables
-- `experiments/walk_forward.py`
+- `src/hft_hmm/experiments/walk_forward.py`
 - small integration test with fixture data covering at least two windows
 - an explicit no-leakage test that fails if the loop accidentally trains on future data
 
@@ -322,7 +322,7 @@ that any run can be re-executed from its saved config alone.
 - add `scripts/repro.py <config.yaml>` that loads a saved config and re-executes the run end to end
 
 ### Deliverables
-- `config/experiment_config.py`
+- `src/hft_hmm/config/experiment_config.py`
 - `scripts/repro.py`
 - config validation tests
 - a round-trip test: run on fixture → re-run via `repro.py` → metrics match bit-for-bit
@@ -471,7 +471,7 @@ Standardize figures for report and presentation use.
 - cumulative PnL plot
 
 ### Deliverables
-- `visualization/plots.py`
+- `src/hft_hmm/visualization/plots.py`
 - smoke tests for plotting functions
 
 ### Acceptance notes
@@ -484,12 +484,14 @@ See Gate I.
 **Gate:** A
 
 ### Goal
-Add a minimal end-to-end usage example suitable for a reviewer.
+Add a minimal end-to-end usage example suitable for a reviewer without
+depending on later side-information milestones.
 
 ### Tasks
 - document environment setup
 - document one baseline run
-- document one side-info run
+- point readers to the later side-information workflow once Gates G/H land,
+  but do not require it for Gate A
 - mention which library routines are used and why
 
 ### Deliverables
@@ -518,3 +520,164 @@ Prepare concise material for preview and final presentation.
 
 ### Acceptance notes
 See Gate I.
+
+---
+
+## Issue 21 — Variance floor and EM monotonicity for the Gaussian HMM
+**Branch:** `fix/21-hmm-em-stability`
+**Gate:** C
+
+### Goal
+Close two paper-fidelity gaps in the Gaussian HMM wrapper that currently
+cause `Model is not converging` warnings on the example walk-forward run:
+(1) no explicit minimum-variance floor tied to the instrument tick size,
+and (2) Baum-Welch log-likelihood is allowed to decrease between EM
+iterations under the default `hmmlearn` settings.
+
+### Tasks
+- add a `min_variance` argument to the HMM wrapper with a documented default
+  derived from the instrument tick size (ES tick = 0.25 → minute log-return
+  floor), and expose it through `ExperimentConfig`
+- clamp or reject `hmmlearn`'s `covars_` post-fit if any diagonal entry
+  falls below `min_variance`
+- tighten `hmmlearn` EM settings (`tol`, `n_iter`, `init_params`, seed
+  control) so all tracked fixtures fit with monotone non-decreasing
+  log-likelihood; document the chosen settings in the wrapper docstring
+- if monotonicity cannot be achieved with `hmmlearn`, replace the EM loop
+  with a custom log-space forward-backward + M-step and label it an
+  engineering approximation
+- propagate chosen settings through `ExperimentConfig` so runs stay
+  deterministic and reproducible
+
+### Deliverables
+- updated `src/hft_hmm/models/gaussian_hmm.py`
+- new tests in `tests/test_gaussian_hmm_wrapper.py`:
+  - monotone EM log-likelihood across iterations on a deterministic fixture
+  - variance-floor enforcement (clamped or raises, per the documented rule)
+- `scripts/repro.py configs/example_es_csv.yaml` runs with no convergence
+  warnings; update the tracked run-hash if affected
+
+### Acceptance notes
+See Gate C. This is the prerequisite for Gate J: results comparisons are
+only meaningful once EM is numerically well-behaved on every window.
+
+---
+
+## Issue 22 — Standalone predictor backtests
+**Branch:** `feat/22-standalone-predictors`
+**Gate:** G
+
+### Goal
+Before wiring side-information predictors into the IOHMM (Issue 16),
+validate each predictor's own signal on the walk-forward rig, mirroring the
+paper's §4 structure where each spline-based predictor is evaluated in
+isolation. This gives a diagnostic before the Gate H comparison and a
+per-predictor baseline for the Gate J results table.
+
+### Tasks
+- add an experiment runner that takes a fitted spline predictor (volatility
+  ratio or seasonality) and produces a sign-based trading signal directly
+  from the spline evaluation at `x_t`, without going through an HMM
+- reuse the existing walk-forward loop, signal module, and metrics module so
+  the artifact shape under `runs/<run_id>/` is identical to the baseline
+  HMM run
+- add two configs under `configs/`:
+  - `example_es_vol_ratio_standalone.yaml`
+  - `example_es_seasonality_standalone.yaml`
+- regenerate both via `scripts/repro.py` and document the outcome (pre-cost
+  Sharpe, hit rate) in the PR notes; once Gate I lands, mirror the same
+  summary into `docs/experiment_log.md`. If a predictor has no traction,
+  record that and flag it as an input to the Gate H discussion
+
+### Deliverables
+- `src/hft_hmm/experiments/standalone_predictor.py`
+- two new config YAMLs under `configs/`
+- two tracked `runs/<run_id>/` artifacts (or documented commands to
+  regenerate)
+- integration test on the tracked month-long ES fixture covering both
+  predictors
+- test asserting the standalone signal path does not instantiate a
+  Gaussian HMM
+
+### Acceptance notes
+See Gate G. The separation from the HMM is what makes the Gate H IOHMM
+comparison interpretable: if a standalone predictor already carries the
+signal, the IOHMM gain should be measured against that baseline, not
+against the vanilla HMM alone.
+
+---
+
+## Issue 23 — Paper spec and ambiguity table
+**Branch:** `docs/23-paper-spec`
+**Gate:** I
+
+### Goal
+Replace the informal "faithful-vs-approximate" prose required by Gate I
+with a single structured document that a thesis committee can read
+top-to-bottom. This is the artifact that defends interpretive choices
+during the oral.
+
+### Tasks
+- create `docs/paper_spec.md` with a table whose columns are:
+  - **component** (e.g., "emission distribution", "transition conditioning")
+  - **paper says** (with §/figure reference)
+  - **repo interpretation** (what we implemented)
+  - **deviation type**: paper-faithful / engineering approximation /
+    evaluation-layer / excluded by §2.5
+  - **acceptance risk** (one short phrase)
+- cover at least: observation construction, emission distribution,
+  transition model (baseline and IOHMM), EM vs MCMC, `K` selection,
+  variance floor, side-information predictors, spline fitting,
+  walk-forward scheme, cost model, and everything currently excluded by
+  `IMPLEMENTATION_PLAN.md §2.5`
+- cross-link each row to the relevant module docstring or issue number
+- link to the spec from `README.md` and `IMPLEMENTATION_PLAN.md`
+
+### Deliverables
+- `docs/paper_spec.md`
+- links from `README.md` and `IMPLEMENTATION_PLAN.md`
+
+### Acceptance notes
+See Gate I. Any later change in scope (e.g., re-including MCMC or an
+ML/DL inference engine outside the paper) must be reflected here as an
+**extension** row, not buried in module docstrings.
+
+---
+
+## Issue 24 — Paper-comparison results document
+**Branch:** `feat/24-results-vs-paper`
+**Gate:** J
+
+### Goal
+Produce the single document a reader opens to see whether the replication
+reproduces anything the paper claims. Not required to match the paper's
+numbers exactly; required to map our numbers to theirs honestly and call
+out where and why they diverge.
+
+### Tasks
+- create `docs/results_vs_paper.md` with a comparison table spanning:
+  - baseline HMM (Gate F)
+  - volatility-ratio IOHMM (Gate H)
+  - seasonality IOHMM (Gate H)
+  - long-only benchmark
+  and columns: pre-cost Sharpe, post-cost Sharpe, hit rate, cumulative
+  return, chosen `K`, sample window, paper reference (§/table), repo
+  `run_id`
+- include a short narrative categorizing each gap as: data scope, model
+  scope (§2.5 exclusions), implementation approximation, or numerical /
+  stochastic variation
+- state plainly which directional claim from the paper the repo reproduces
+  (e.g., "vol-conditioned transitions beat baseline on pre-cost Sharpe by
+  Δ on fixture Y, vs paper's reported Δ′ in §4.4")
+- produce one comparison figure using Gate I's plotting code and store
+  under `docs/figures/`
+
+### Deliverables
+- `docs/results_vs_paper.md`
+- `docs/figures/cumulative_return_vs_paper.png` (or equivalent)
+- all cited `runs/<run_id>/` artifacts reproducible via `scripts/repro.py`
+
+### Acceptance notes
+See Gate J. A PR opening this issue must cite live `run_id`s; the table
+cannot be filled with placeholders. This is the gate that answers "did
+the project work."
