@@ -18,3 +18,4 @@ walk_forward:
   retrain_every_days: 2
   t_days: 2
   tol: 0.0001
+  variance_floor_policy: clamp

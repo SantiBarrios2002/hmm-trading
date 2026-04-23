@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 
+from hft_hmm.data import load_csv_market_data
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.plr_baseline import fit_piecewise_linear_regression
+from hft_hmm.preprocessing import compute_log_returns
+
+TRACKED_ES_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "es_1min_sample.csv"
 
 
 def _sample_two_regime_returns(
@@ -125,24 +132,70 @@ def test_fit_records_monotone_em_log_likelihood_history():
     assert result.em_log_likelihood_is_monotone is True
 
 
-def test_fit_clamps_variances_to_configured_floor():
+def _tight_two_regime_returns() -> np.ndarray:
+    """Returns whose natural EM variance sits far below the floor in the test."""
     rng = np.random.default_rng(0)
-    returns = np.concatenate(
+    return np.concatenate(
         [
             rng.normal(loc=-1e-5, scale=1e-6, size=500),
             rng.normal(loc=1e-5, scale=1e-6, size=500),
         ]
     )
+
+
+def test_fit_clamps_variances_and_logs_affected_states(caplog):
+    returns = _tight_two_regime_returns()
     min_variance = 1e-4
 
-    result = GaussianHMMWrapper(
-        n_states=2,
-        random_state=0,
-        min_variance=min_variance,
-    ).fit(returns)
+    with caplog.at_level(logging.WARNING, logger="hft_hmm.models.gaussian_hmm"):
+        result = GaussianHMMWrapper(
+            n_states=2,
+            random_state=0,
+            min_variance=min_variance,
+        ).fit(returns)
 
     assert result.min_variance == pytest.approx(min_variance)
     assert np.all(result.variances >= min_variance)
+
+    clamp_records = [r for r in caplog.records if "Clamping fitted variances" in r.getMessage()]
+    assert clamp_records, "clamping must emit a logging.warning"
+    message = clamp_records[0].getMessage()
+    assert f"min_variance={min_variance:g}" in message
+    # The payload lists the affected state indices — must be non-empty and parseable.
+    bracket_open = message.index("[")
+    bracket_close = message.index("]", bracket_open)
+    raw_indices = message[bracket_open + 1 : bracket_close].split(",")
+    indices = [int(part) for part in raw_indices if part.strip()]
+    assert indices, "warning must name at least one affected state index"
+    assert all(0 <= idx < 2 for idx in indices)
+
+
+def test_fit_raises_when_variance_floor_policy_is_raise():
+    returns = _tight_two_regime_returns()
+    min_variance = 1e-4
+
+    wrapper = GaussianHMMWrapper(
+        n_states=2,
+        random_state=0,
+        min_variance=min_variance,
+        variance_floor_policy="raise",
+    )
+    with pytest.raises(ValueError, match=r"fitted variance.*state index/indices \[\d"):
+        wrapper.fit(returns)
+
+
+def test_em_log_likelihood_is_monotone_on_tracked_es_fixture():
+    prices = load_csv_market_data(str(TRACKED_ES_FIXTURE))
+    returns = compute_log_returns(prices.set_index("timestamp")["price"]).dropna()
+
+    result = GaussianHMMWrapper(n_states=2, random_state=0, n_iter=200).fit(returns)
+
+    # The history must exist, cover at least two iterations (otherwise
+    # "monotone" is vacuous), and never decrease beyond numerical noise.
+    history = result.em_log_likelihood_history
+    assert history.shape[0] >= 2
+    assert result.em_log_likelihood_is_monotone is True
+    assert np.all(np.diff(history) >= -np.sqrt(np.finfo(float).eps))
 
 
 def test_init_from_plr_produces_reproducible_fit():
@@ -215,6 +268,11 @@ def test_constructor_validates_arguments(kwargs):
 def test_constructor_rejects_non_finite_min_variance(min_variance: float):
     with pytest.raises(ValueError, match="min_variance"):
         GaussianHMMWrapper(n_states=2, min_variance=min_variance)
+
+
+def test_constructor_rejects_unknown_variance_floor_policy():
+    with pytest.raises(ValueError, match="variance_floor_policy"):
+        GaussianHMMWrapper(n_states=2, variance_floor_policy="quiet")  # type: ignore[arg-type]
 
 
 def test_result_is_frozen_and_arrays_read_only():

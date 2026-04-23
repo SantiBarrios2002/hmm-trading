@@ -56,7 +56,11 @@ from hft_hmm.evaluation import (
     signal_turnover,
 )
 from hft_hmm.inference import forward_filter
-from hft_hmm.models.gaussian_hmm import GaussianHMMWrapper
+from hft_hmm.models.gaussian_hmm import (
+    _VARIANCE_FLOOR_POLICIES,
+    GaussianHMMWrapper,
+    VarianceFloorPolicy,
+)
 from hft_hmm.selection import compare_state_counts
 from hft_hmm.strategy import align_signal_with_future_return, signal_from_filter_result
 
@@ -84,6 +88,7 @@ class WalkForwardConfig:
     n_iter: int = 100
     tol: float = 1e-4
     min_variance: float = 1e-8
+    variance_floor_policy: VarianceFloorPolicy = "clamp"
 
     def __post_init__(self) -> None:
         if self.h_days < 1:
@@ -104,6 +109,11 @@ class WalkForwardConfig:
             raise ValueError(
                 "min_variance must be a finite strictly positive float, "
                 f"got {self.min_variance!r}."
+            )
+        if self.variance_floor_policy not in _VARIANCE_FLOOR_POLICIES:
+            raise ValueError(
+                "variance_floor_policy must be one of "
+                f"{sorted(_VARIANCE_FLOOR_POLICIES)}, got {self.variance_floor_policy!r}."
             )
 
         k_tuple = tuple(self.k_values)
@@ -309,6 +319,7 @@ def walk_forward(
             n_iter=config.n_iter,
             tol=config.tol,
             min_variance=config.min_variance,
+            variance_floor_policy=config.variance_floor_policy,
         )
         fitted = wrapper.fit(train_slice)
 
@@ -388,6 +399,7 @@ def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
         n_iter=config.n_iter,
         tol=config.tol,
         min_variance=config.min_variance,
+        variance_floor_policy=config.variance_floor_policy,
     )
     return int(selection.best_by_bic)
 
