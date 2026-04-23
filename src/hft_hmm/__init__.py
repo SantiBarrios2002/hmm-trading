@@ -46,6 +46,12 @@ from hft_hmm.experiments import (
     walk_forward,
 )
 from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, run_experiment
+from hft_hmm.features import (
+    VOLATILITY_RATIO_REFERENCE,
+    VolatilityRatioConfig,
+    ewma_volatility,
+    volatility_ratio,
+)
 from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models import (
     GaussianHMMResult,
@@ -84,6 +90,7 @@ __all__ = [
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
     "SIGNAL_REFERENCE",
+    "VOLATILITY_RATIO_REFERENCE",
     "WALK_FORWARD_REFERENCE",
     "DataSourceConfig",
     "ExperimentConfig",
@@ -101,6 +108,7 @@ __all__ = [
     "ProjectInfo",
     "RunArtifacts",
     "StateGrid",
+    "VolatilityRatioConfig",
     "WalkForwardConfig",
     "WalkForwardResult",
     "WalkForwardWindow",
@@ -115,6 +123,7 @@ __all__ = [
     "count_gaussian_hmm_parameters",
     "cumulative_return",
     "default_labels",
+    "ewma_volatility",
     "fit_piecewise_linear_regression",
     "filter_from_result",
     "forward_filter",
@@ -139,5 +148,6 @@ __all__ = [
     "thresholded_signal",
     "train_test_split_time",
     "validate_market_data",
+    "volatility_ratio",
     "walk_forward",
 ]
