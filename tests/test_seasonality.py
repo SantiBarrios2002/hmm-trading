@@ -104,6 +104,33 @@ def test_intraday_seasonality_is_deterministic() -> None:
     pd.testing.assert_series_equal(first, second)
 
 
+def test_intraday_seasonality_accepts_config_object() -> None:
+    prices = _series(
+        [
+            "2024-01-02 15:30:00+00:00",  # 10:30 EST
+            "2024-01-02 15:59:00+00:00",  # 10:59 EST
+            "2024-01-02 16:00:00+00:00",  # 11:00 EST
+        ]
+    )
+    config = SeasonalityConfig(
+        exchange_tz="America/New_York",
+        bucket_minutes=30,
+        normalize=False,
+    )
+
+    feature = intraday_seasonality(prices, config=config)
+
+    assert feature.tolist() == [21, 21, 22]
+
+
+def test_intraday_seasonality_rejects_non_default_kwargs_with_config() -> None:
+    prices = _series(["2024-01-02 15:30:00+00:00"])
+    config = SeasonalityConfig(bucket_minutes=5)
+
+    with pytest.raises(TypeError, match="does not accept keyword parameters"):
+        intraday_seasonality(prices, config=config, normalize=False)
+
+
 def test_intraday_seasonality_rejects_non_series_input() -> None:
     with pytest.raises(TypeError, match="pd.Series"):
         intraday_seasonality(np.array([1.0, 2.0, 3.0]))  # type: ignore[arg-type]
