@@ -95,9 +95,10 @@ def test_ewma_volatility_returns_all_nan_when_input_shorter_than_window() -> Non
     assert len(sigma) == len(returns)
 
 
-def test_ewma_volatility_rejects_nan_input() -> None:
-    returns = _series(np.array([0.001, np.nan, 0.002, 0.0]))
-    with pytest.raises(ValueError, match="NaN"):
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+def test_ewma_volatility_rejects_non_finite_input(bad_value: float) -> None:
+    returns = _series(np.array([0.001, bad_value, 0.002, 0.0]))
+    with pytest.raises(ValueError, match="finite"):
         ewma_volatility(returns, decay=0.5, window=2)
 
 

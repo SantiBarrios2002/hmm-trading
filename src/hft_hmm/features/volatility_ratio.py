@@ -83,8 +83,10 @@ def ewma_volatility(
         raise TypeError(f"returns must be a pandas Series, got {type(returns).__name__}.")
 
     values = returns.to_numpy(dtype=float)
-    if np.isnan(values).any():
-        raise ValueError("returns must not contain NaN; drop missing values before calling.")
+    if not np.isfinite(values).all():
+        raise ValueError(
+            "returns must be finite; drop or mask non-finite values before calling."
+        )
 
     squared = values**2
     sigma = np.full(values.shape[0], np.nan, dtype=float)
