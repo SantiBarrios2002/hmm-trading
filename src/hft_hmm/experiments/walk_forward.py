@@ -56,7 +56,11 @@ from hft_hmm.evaluation import (
     signal_turnover,
 )
 from hft_hmm.inference import forward_filter
-from hft_hmm.models.gaussian_hmm import GaussianHMMWrapper
+from hft_hmm.models.gaussian_hmm import (
+    _VARIANCE_FLOOR_POLICIES,
+    GaussianHMMWrapper,
+    VarianceFloorPolicy,
+)
 from hft_hmm.selection import compare_state_counts
 from hft_hmm.strategy import align_signal_with_future_return, signal_from_filter_result
 
@@ -83,6 +87,8 @@ class WalkForwardConfig:
     random_state: int = 0
     n_iter: int = 100
     tol: float = 1e-4
+    min_variance: float = 1e-8
+    variance_floor_policy: VarianceFloorPolicy = "clamp"
 
     def __post_init__(self) -> None:
         if self.h_days < 1:
@@ -99,6 +105,16 @@ class WalkForwardConfig:
             raise ValueError(f"n_iter must be >= 1, got {self.n_iter}.")
         if self.tol <= 0.0:
             raise ValueError(f"tol must be strictly positive, got {self.tol}.")
+        if not np.isfinite(self.min_variance) or self.min_variance <= 0.0:
+            raise ValueError(
+                "min_variance must be a finite strictly positive float, "
+                f"got {self.min_variance!r}."
+            )
+        if self.variance_floor_policy not in _VARIANCE_FLOOR_POLICIES:
+            raise ValueError(
+                "variance_floor_policy must be one of "
+                f"{sorted(_VARIANCE_FLOOR_POLICIES)}, got {self.variance_floor_policy!r}."
+            )
 
         k_tuple = tuple(self.k_values)
         if not k_tuple:
@@ -113,6 +129,7 @@ class WalkForwardConfig:
 
         object.__setattr__(self, "retrain_every_days", int(retrain_every_days))
         object.__setattr__(self, "k_values", k_tuple)
+        object.__setattr__(self, "min_variance", float(self.min_variance))
 
 
 @dataclass(frozen=True)
@@ -302,6 +319,8 @@ def walk_forward(
             random_state=config.random_state,
             n_iter=config.n_iter,
             tol=config.tol,
+            min_variance=config.min_variance,
+            variance_floor_policy=config.variance_floor_policy,
         )
         fitted = wrapper.fit(train_slice)
 
@@ -380,6 +399,8 @@ def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
         random_state=config.random_state,
         n_iter=config.n_iter,
         tol=config.tol,
+        min_variance=config.min_variance,
+        variance_floor_policy=config.variance_floor_policy,
     )
     return int(selection.best_by_bic)
 

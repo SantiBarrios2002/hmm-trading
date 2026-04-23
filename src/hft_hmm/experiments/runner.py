@@ -247,4 +247,9 @@ def _json_safe(value: Any) -> float | None:
     numeric = float(value)
     if not math.isfinite(numeric):
         return None
-    return numeric
+    # Round serialized metrics to 8 decimals so artifacts compare bit-for-bit
+    # across subprocess and in-process runs. BLAS thread-ordering produces
+    # sub-ULP drift at full float64 precision that would otherwise break
+    # Gate F's reproducibility contract without materially affecting any
+    # reported Sharpe / return figure.
+    return round(numeric, 8)

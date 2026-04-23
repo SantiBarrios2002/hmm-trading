@@ -187,6 +187,8 @@ class ExperimentConfig:
                 "random_state": int(self.walk_forward.random_state),
                 "n_iter": int(self.walk_forward.n_iter),
                 "tol": float(self.walk_forward.tol),
+                "min_variance": float(self.walk_forward.min_variance),
+                "variance_floor_policy": str(self.walk_forward.variance_floor_policy),
             },
             "notes": self.notes,
             "sha256": self.sha256,
@@ -195,6 +197,13 @@ class ExperimentConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExperimentConfig:
         wf_raw = data["walk_forward"]
+        for required_key in ("min_variance", "variance_floor_policy"):
+            if required_key not in wf_raw:
+                raise ValueError(
+                    f"walk_forward.{required_key} is required; configs written before "
+                    "Issue 21 must be regenerated so the EM-stability knobs are "
+                    "explicit in the run_id hash."
+                )
         walk_forward = WalkForwardConfig(
             h_days=int(wf_raw["h_days"]),
             t_days=int(wf_raw["t_days"]),
@@ -203,6 +212,8 @@ class ExperimentConfig:
             random_state=int(wf_raw["random_state"]),
             n_iter=int(wf_raw["n_iter"]),
             tol=float(wf_raw["tol"]),
+            min_variance=float(wf_raw["min_variance"]),
+            variance_floor_policy=wf_raw["variance_floor_policy"],
         )
         return cls(
             data=DataSourceConfig.from_dict(data["data"]),

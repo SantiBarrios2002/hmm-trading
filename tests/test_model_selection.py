@@ -196,6 +196,8 @@ def test_compare_state_counts_warns_for_non_converged_fits(monkeypatch):
             random_state: int | None,
             n_iter: int,
             tol: float,
+            min_variance: float,
+            variance_floor_policy: str,
         ) -> None:
             self.n_states = n_states
             self.random_state = random_state

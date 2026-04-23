@@ -103,6 +103,27 @@ def test_experiment_config_yaml_round_trip_is_fixed_point(tmp_path: Path) -> Non
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_experiment_config_roundtrip_preserves_min_variance(tmp_path: Path) -> None:
+    cfg = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(
+            h_days=5,
+            t_days=1,
+            k_values=(2,),
+            random_state=7,
+            min_variance=2.5e-8,
+        ),
+        sha256=SAMPLE_SHA256,
+    )
+
+    path = tmp_path / "cfg.yaml"
+    cfg.to_yaml(path)
+    loaded = ExperimentConfig.from_yaml(path)
+
+    assert loaded.walk_forward.min_variance == pytest.approx(2.5e-8)
+
+
 def test_data_source_config_csv_requires_path() -> None:
     with pytest.raises(ValueError, match="requires path"):
         DataSourceConfig(kind="csv")
@@ -387,6 +408,135 @@ def test_run_id_changes_when_sha256_changes() -> None:
     assert run_id(base) != run_id(perturbed)
 
 
+def test_from_dict_rejects_legacy_walk_forward_without_min_variance() -> None:
+    payload = {
+        "data": {
+            "kind": "csv",
+            "path": "tests/fixtures/es_1min_sample.csv",
+            "symbol": None,
+            "start": None,
+            "end": None,
+        },
+        "frequency": "1min",
+        "cost_bps_per_turnover": 0.0,
+        "sha256": SAMPLE_SHA256,
+        "walk_forward": {
+            "h_days": 3,
+            "t_days": 1,
+            "retrain_every_days": 1,
+            "k_values": [2],
+            "random_state": 0,
+            "n_iter": 50,
+            "tol": 1e-4,
+            "variance_floor_policy": "clamp",
+        },
+        "notes": "",
+    }
+    with pytest.raises(ValueError, match="walk_forward.min_variance is required"):
+        ExperimentConfig.from_dict(payload)
+
+
+def test_from_dict_rejects_legacy_walk_forward_without_variance_floor_policy() -> None:
+    payload = {
+        "data": {
+            "kind": "csv",
+            "path": "tests/fixtures/es_1min_sample.csv",
+            "symbol": None,
+            "start": None,
+            "end": None,
+        },
+        "frequency": "1min",
+        "cost_bps_per_turnover": 0.0,
+        "sha256": SAMPLE_SHA256,
+        "walk_forward": {
+            "h_days": 3,
+            "t_days": 1,
+            "retrain_every_days": 1,
+            "k_values": [2],
+            "random_state": 0,
+            "n_iter": 50,
+            "tol": 1e-4,
+            "min_variance": 1e-8,
+        },
+        "notes": "",
+    }
+    with pytest.raises(ValueError, match="walk_forward.variance_floor_policy is required"):
+        ExperimentConfig.from_dict(payload)
+
+
+def test_from_dict_rejects_unknown_variance_floor_policy() -> None:
+    payload = {
+        "data": {
+            "kind": "csv",
+            "path": "tests/fixtures/es_1min_sample.csv",
+            "symbol": None,
+            "start": None,
+            "end": None,
+        },
+        "frequency": "1min",
+        "cost_bps_per_turnover": 0.0,
+        "sha256": SAMPLE_SHA256,
+        "walk_forward": {
+            "h_days": 3,
+            "t_days": 1,
+            "retrain_every_days": 1,
+            "k_values": [2],
+            "random_state": 0,
+            "n_iter": 50,
+            "tol": 1e-4,
+            "min_variance": 1e-8,
+            "variance_floor_policy": "clip",
+        },
+        "notes": "",
+    }
+    with pytest.raises(ValueError, match="variance_floor_policy"):
+        ExperimentConfig.from_dict(payload)
+
+
+def test_run_id_changes_when_variance_floor_policy_changes() -> None:
+    base = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        sha256=SAMPLE_SHA256,
+    )
+    perturbed = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(
+            h_days=5,
+            t_days=1,
+            k_values=(2,),
+            random_state=7,
+            variance_floor_policy="raise",
+        ),
+        sha256=SAMPLE_SHA256,
+    )
+    assert run_id(base) != run_id(perturbed)
+
+
+def test_run_id_changes_when_min_variance_changes() -> None:
+    base = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=_wf(),
+        sha256=SAMPLE_SHA256,
+    )
+    perturbed = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(
+            h_days=5,
+            t_days=1,
+            k_values=(2,),
+            random_state=7,
+            min_variance=2e-8,
+        ),
+        sha256=SAMPLE_SHA256,
+    )
+    assert run_id(base) != run_id(perturbed)
+
+
 def test_run_id_rejects_non_experiment_config() -> None:
     with pytest.raises(TypeError, match="must be an ExperimentConfig"):
         run_id({"frequency": "1min"})  # type: ignore[arg-type]
@@ -422,6 +572,8 @@ def test_from_yaml_reads_yaml_written_externally(tmp_path: Path) -> None:
                     "random_state": 0,
                     "n_iter": 50,
                     "tol": 1e-4,
+                    "min_variance": 1e-8,
+                    "variance_floor_policy": "clamp",
                 },
                 "notes": "external writer",
             },
@@ -430,6 +582,8 @@ def test_from_yaml_reads_yaml_written_externally(tmp_path: Path) -> None:
     )
     cfg = ExperimentConfig.from_yaml(path)
     assert cfg.walk_forward.k_values == (2, 3)
+    assert cfg.walk_forward.min_variance == pytest.approx(1e-8)
+    assert cfg.walk_forward.variance_floor_policy == "clamp"
     assert cfg.cost_bps_per_turnover == 2.0
     assert cfg.notes == "external writer"
     assert cfg.sha256 == SAMPLE_SHA256

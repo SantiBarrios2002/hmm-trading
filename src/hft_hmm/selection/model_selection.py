@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 from hft_hmm.core import ENGINEERING_APPROXIMATION, PaperReference, reference
-from hft_hmm.models.gaussian_hmm import GaussianHMMWrapper
+from hft_hmm.models.gaussian_hmm import GaussianHMMWrapper, VarianceFloorPolicy
 
 __category__: Final[str] = ENGINEERING_APPROXIMATION
 MODEL_SELECTION_REFERENCE: Final[PaperReference] = reference("§4", "model selection via AIC/BIC")
@@ -125,6 +125,8 @@ def compare_state_counts(
     random_state: int | None = None,
     n_iter: int = 100,
     tol: float = 1e-4,
+    min_variance: float = 1e-8,
+    variance_floor_policy: VarianceFloorPolicy = "clamp",
 ) -> ModelSelectionResult:
     """Fit a Gaussian HMM at each ``K`` in ``k_values`` and rank by AIC/BIC.
 
@@ -149,6 +151,8 @@ def compare_state_counts(
             random_state=random_state,
             n_iter=n_iter,
             tol=tol,
+            min_variance=min_variance,
+            variance_floor_policy=variance_floor_policy,
         )
         result = wrapper.fit(observations)
         if not result.converged:
