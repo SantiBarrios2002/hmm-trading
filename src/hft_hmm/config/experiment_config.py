@@ -187,6 +187,7 @@ class ExperimentConfig:
                 "random_state": int(self.walk_forward.random_state),
                 "n_iter": int(self.walk_forward.n_iter),
                 "tol": float(self.walk_forward.tol),
+                "min_variance": float(self.walk_forward.min_variance),
             },
             "notes": self.notes,
             "sha256": self.sha256,
@@ -203,6 +204,7 @@ class ExperimentConfig:
             random_state=int(wf_raw["random_state"]),
             n_iter=int(wf_raw["n_iter"]),
             tol=float(wf_raw["tol"]),
+            min_variance=float(wf_raw.get("min_variance", 1e-8)),
         )
         return cls(
             data=DataSourceConfig.from_dict(data["data"]),

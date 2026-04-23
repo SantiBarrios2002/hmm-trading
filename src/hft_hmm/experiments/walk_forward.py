@@ -83,6 +83,7 @@ class WalkForwardConfig:
     random_state: int = 0
     n_iter: int = 100
     tol: float = 1e-4
+    min_variance: float = 1e-8
 
     def __post_init__(self) -> None:
         if self.h_days < 1:
@@ -99,6 +100,11 @@ class WalkForwardConfig:
             raise ValueError(f"n_iter must be >= 1, got {self.n_iter}.")
         if self.tol <= 0.0:
             raise ValueError(f"tol must be strictly positive, got {self.tol}.")
+        if not np.isfinite(self.min_variance) or self.min_variance <= 0.0:
+            raise ValueError(
+                "min_variance must be a finite strictly positive float, "
+                f"got {self.min_variance!r}."
+            )
 
         k_tuple = tuple(self.k_values)
         if not k_tuple:
@@ -302,6 +308,7 @@ def walk_forward(
             random_state=config.random_state,
             n_iter=config.n_iter,
             tol=config.tol,
+            min_variance=config.min_variance,
         )
         fitted = wrapper.fit(train_slice)
 
@@ -380,6 +387,7 @@ def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
         random_state=config.random_state,
         n_iter=config.n_iter,
         tol=config.tol,
+        min_variance=config.min_variance,
     )
     return int(selection.best_by_bic)
 

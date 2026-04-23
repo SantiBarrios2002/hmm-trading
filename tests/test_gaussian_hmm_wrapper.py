@@ -116,6 +116,35 @@ def test_fit_is_deterministic_under_fixed_random_state():
     np.testing.assert_allclose(first.initial_distribution, second.initial_distribution)
 
 
+def test_fit_records_monotone_em_log_likelihood_history():
+    returns = _sample_two_regime_returns(seed=10)
+    result = GaussianHMMWrapper(n_states=2, random_state=42, n_iter=200).fit(returns)
+
+    assert result.n_iter == result.em_log_likelihood_history.shape[0]
+    assert result.em_log_likelihood_history.shape[0] >= 2
+    assert result.em_log_likelihood_is_monotone is True
+
+
+def test_fit_clamps_variances_to_configured_floor():
+    rng = np.random.default_rng(0)
+    returns = np.concatenate(
+        [
+            rng.normal(loc=-1e-5, scale=1e-6, size=500),
+            rng.normal(loc=1e-5, scale=1e-6, size=500),
+        ]
+    )
+    min_variance = 1e-4
+
+    result = GaussianHMMWrapper(
+        n_states=2,
+        random_state=0,
+        min_variance=min_variance,
+    ).fit(returns)
+
+    assert result.min_variance == pytest.approx(min_variance)
+    assert np.all(result.variances >= min_variance)
+
+
 def test_init_from_plr_produces_reproducible_fit():
     prices = _sample_two_regime_prices(seed=11)
     plr = fit_piecewise_linear_regression(prices, n_segments=2)
@@ -170,11 +199,22 @@ def test_fit_rejects_empty_input():
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{"n_states": 1}, {"n_states": 2, "n_iter": 0}, {"n_states": 2, "tol": 0.0}],
+    [
+        {"n_states": 1},
+        {"n_states": 2, "n_iter": 0},
+        {"n_states": 2, "tol": 0.0},
+        {"n_states": 2, "min_variance": 0.0},
+    ],
 )
 def test_constructor_validates_arguments(kwargs):
     with pytest.raises(ValueError):
         GaussianHMMWrapper(**kwargs)
+
+
+@pytest.mark.parametrize("min_variance", [float("nan"), float("inf"), float("-inf")])
+def test_constructor_rejects_non_finite_min_variance(min_variance: float):
+    with pytest.raises(ValueError, match="min_variance"):
+        GaussianHMMWrapper(n_states=2, min_variance=min_variance)
 
 
 def test_result_is_frozen_and_arrays_read_only():

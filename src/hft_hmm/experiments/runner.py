@@ -247,4 +247,4 @@ def _json_safe(value: Any) -> float | None:
     numeric = float(value)
     if not math.isfinite(numeric):
         return None
-    return numeric
+    return round(numeric, 8)

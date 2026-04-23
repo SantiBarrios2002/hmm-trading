@@ -117,6 +117,7 @@ def test_walk_forward_config_defaults_match_paper() -> None:
     assert config.retrain_every_days == 1
     assert config.k_values == (2,)
     assert config.random_state == 0
+    assert config.min_variance == pytest.approx(1e-8)
 
 
 def test_walk_forward_config_rejects_invalid_values() -> None:
@@ -130,6 +131,8 @@ def test_walk_forward_config_rejects_invalid_values() -> None:
         WalkForwardConfig(n_iter=0)
     with pytest.raises(ValueError, match="tol"):
         WalkForwardConfig(tol=0.0)
+    with pytest.raises(ValueError, match="min_variance"):
+        WalkForwardConfig(min_variance=0.0)
     with pytest.raises(ValueError, match="k_values must contain"):
         WalkForwardConfig(k_values=())
     with pytest.raises(ValueError, match="unique"):

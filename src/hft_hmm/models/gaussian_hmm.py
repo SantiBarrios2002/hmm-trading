@@ -8,6 +8,15 @@ and forward-backward posterior computation are delegated to
 - canonical state ordering (ascending mean return) so downstream filtering and
   signal code can assume a stable ``StateGrid`` convention,
 - deterministic ``random_state`` plumbing,
+- an explicit minimum-variance floor ``min_variance`` with a tracked ES
+  default of ``1e-8`` in log-return units, which is roughly the squared
+  log return of a two-tick move (``2 * 0.25`` index points) near an ES
+  price level of ``5,000``,
+- stabilized EM backend settings chosen so the tracked ES fixture fits with a
+  monotone non-decreasing log-likelihood under ``hmmlearn``'s log-space
+  implementation: ``min_covar=min_variance``, ``startprob_prior=2.0``,
+  ``transmat_prior=2.0``, ``covars_prior=min_variance``, and
+  ``covars_weight=2.0``,
 - an ``init_from_plr`` path that seeds ``startprob_``, ``transmat_``,
   ``means_``, and ``covars_`` from an Issue 05 PLR baseline result, matching
   the paper's recommended initialization strategy.
@@ -18,7 +27,7 @@ review notes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
@@ -37,8 +46,12 @@ from hft_hmm.models.plr_baseline import PLRBaselineResult
 __category__: Final[str] = ENGINEERING_APPROXIMATION
 GAUSSIAN_HMM_REFERENCE: Final[PaperReference] = reference("§3", "Gaussian HMM baseline")
 
-_MIN_VARIANCE: Final[float] = 1e-8
+_DEFAULT_MIN_VARIANCE: Final[float] = 1e-8
 _TRANSMAT_SMOOTHING: Final[float] = 1.0
+_STARTPROB_PRIOR: Final[float] = 2.0
+_TRANSMAT_PRIOR: Final[float] = 2.0
+_COVARS_WEIGHT: Final[float] = 2.0
+_MONOTONICITY_ATOL: Final[float] = float(np.finfo(float).eps ** 0.5)
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,8 @@ class GaussianHMMResult:
     converged: bool
     n_iter: int
     random_state: int | None
+    min_variance: float = _DEFAULT_MIN_VARIANCE
+    em_log_likelihood_history: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=float))
 
     def __post_init__(self) -> None:
         k = self.state_grid.k
@@ -67,6 +82,7 @@ class GaussianHMMResult:
         variances = np.asarray(self.variances, dtype=float).copy()
         transmat = np.asarray(self.transition_matrix, dtype=float).copy()
         startprob = np.asarray(self.initial_distribution, dtype=float).copy()
+        history = np.asarray(self.em_log_likelihood_history, dtype=float).copy()
 
         if means.shape != (k,):
             raise ValueError(f"means must have shape ({k},), got {means.shape}.")
@@ -105,14 +121,34 @@ class GaussianHMMResult:
             raise ValueError("means must match state_grid.means.")
         if self.n_observations < 1:
             raise ValueError("n_observations must be positive.")
+        if not np.isfinite(self.min_variance) or self.min_variance <= 0.0:
+            raise ValueError(
+                "min_variance must be a finite strictly positive float, "
+                f"got {self.min_variance!r}."
+            )
 
-        for array in (means, variances, transmat, startprob):
+        if history.ndim != 1:
+            raise ValueError(
+                "em_log_likelihood_history must be one-dimensional, " f"got shape {history.shape}."
+            )
+        if history.size == 0:
+            history = np.array([float(self.log_likelihood)], dtype=float)
+        if not np.all(np.isfinite(history)):
+            raise ValueError("em_log_likelihood_history must contain only finite values.")
+
+        for array in (means, variances, transmat, startprob, history):
             array.setflags(write=False)
 
         object.__setattr__(self, "means", means)
         object.__setattr__(self, "variances", variances)
         object.__setattr__(self, "transition_matrix", transmat)
         object.__setattr__(self, "initial_distribution", startprob)
+        object.__setattr__(self, "em_log_likelihood_history", history)
+
+    @property
+    def em_log_likelihood_is_monotone(self) -> bool:
+        """Return whether the stored EM log-likelihood history is non-decreasing."""
+        return _is_monotone_non_decreasing(self.em_log_likelihood_history)
 
 
 class GaussianHMMWrapper:
@@ -133,6 +169,7 @@ class GaussianHMMWrapper:
         random_state: int | None = None,
         n_iter: int = 100,
         tol: float = 1e-4,
+        min_variance: float = _DEFAULT_MIN_VARIANCE,
     ) -> None:
         if n_states < 2:
             raise ValueError(f"n_states must be at least 2, got {n_states}.")
@@ -140,11 +177,16 @@ class GaussianHMMWrapper:
             raise ValueError(f"n_iter must be positive, got {n_iter}.")
         if tol <= 0.0:
             raise ValueError(f"tol must be strictly positive, got {tol}.")
+        if not np.isfinite(min_variance) or min_variance <= 0.0:
+            raise ValueError(
+                "min_variance must be a finite strictly positive float, " f"got {min_variance!r}."
+            )
 
         self.n_states = n_states
         self.random_state = random_state
         self.n_iter = n_iter
         self.tol = tol
+        self.min_variance = float(min_variance)
         self._model: GaussianHMM | None = None
         self._permutation: np.ndarray | None = None
 
@@ -175,16 +217,24 @@ class GaussianHMMWrapper:
             covariance_type="diag",
             n_iter=self.n_iter,
             tol=self.tol,
+            min_covar=self.min_variance,
+            startprob_prior=_STARTPROB_PRIOR,
+            transmat_prior=_TRANSMAT_PRIOR,
+            covars_prior=self.min_variance,
+            covars_weight=_COVARS_WEIGHT,
             random_state=self.random_state,
             init_params=init_params,
             params="stmc",
+            implementation="log",
         )
 
         if init_from_plr is not None:
-            _seed_from_plr(model, init_from_plr)
+            _seed_from_plr(model, init_from_plr, min_variance=self.min_variance)
 
         model.fit(reshaped)
+        _clamp_min_variance(model, min_variance=self.min_variance)
         log_likelihood = float(model.score(reshaped))
+        em_log_likelihood_history = np.array(model.monitor_.history, dtype=float)
 
         means_raw = model.means_.reshape(-1)
         variances_raw = model.covars_.reshape(-1)
@@ -215,6 +265,8 @@ class GaussianHMMWrapper:
             converged=bool(model.monitor_.converged),
             n_iter=int(model.monitor_.iter),
             random_state=self.random_state,
+            min_variance=self.min_variance,
+            em_log_likelihood_history=em_log_likelihood_history,
         )
 
     def predict(self, returns: pd.Series | np.ndarray) -> np.ndarray:
@@ -256,7 +308,12 @@ def _apply_permutation(raw_states: np.ndarray, permutation: np.ndarray) -> np.nd
     return np.asarray(inverse[raw_states], dtype=permutation.dtype)
 
 
-def _seed_from_plr(model: GaussianHMM, plr: PLRBaselineResult) -> None:
+def _seed_from_plr(
+    model: GaussianHMM,
+    plr: PLRBaselineResult,
+    *,
+    min_variance: float,
+) -> None:
     """Set model parameters from a PLR baseline result before fitting.
 
     Transition probabilities are smoothed with an additive Laplace prior so
@@ -265,7 +322,7 @@ def _seed_from_plr(model: GaussianHMM, plr: PLRBaselineResult) -> None:
     """
     k = plr.state_grid.k
     means = plr.state_grid.means.reshape(k, 1).astype(float, copy=True)
-    variances = np.maximum(plr.state_variances.astype(float, copy=True), _MIN_VARIANCE)
+    variances = np.maximum(plr.state_variances.astype(float, copy=True), min_variance)
     covars = variances.reshape(k, 1)
 
     state_sequence = np.asarray(plr.state_sequence, dtype=int)
@@ -282,3 +339,16 @@ def _seed_from_plr(model: GaussianHMM, plr: PLRBaselineResult) -> None:
     model.transmat_ = transmat
     model.means_ = means
     model.covars_ = covars
+
+
+def _clamp_min_variance(model: GaussianHMM, *, min_variance: float) -> None:
+    """Clamp learned diagonal covariances to the configured variance floor."""
+    clamped = np.maximum(np.asarray(model._covars_, dtype=float), min_variance)
+    model._covars_ = clamped
+
+
+def _is_monotone_non_decreasing(history: np.ndarray) -> bool:
+    """Return whether ``history`` is non-decreasing up to float noise."""
+    if history.shape[0] < 2:
+        return True
+    return bool(np.all(np.diff(history) >= -_MONOTONICITY_ATOL))

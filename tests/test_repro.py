@@ -323,6 +323,18 @@ def test_repro_cli_runs_example_config_end_to_end(tmp_path: Path) -> None:
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
 
 
+def test_repro_cli_example_config_emits_no_convergence_warning(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    completed = subprocess.run(
+        [sys.executable, str(REPRO_SCRIPT), str(EXAMPLE_CONFIG), "--runs-root", str(runs_root)],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert "Model is not converging" not in completed.stderr
+
+
 def test_repro_cli_force_overwrite(tmp_path: Path) -> None:
     config = _csv_config()
     config_yaml = tmp_path / "cfg.yaml"
