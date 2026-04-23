@@ -47,9 +47,14 @@ from hft_hmm.experiments import (
 )
 from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, run_experiment
 from hft_hmm.features import (
+    DEFAULT_BUCKET_MINUTES,
+    DEFAULT_EXCHANGE_TZ,
+    INTRADAY_SEASONALITY_REFERENCE,
+    SeasonalityConfig,
     VOLATILITY_RATIO_REFERENCE,
     VolatilityRatioConfig,
     ewma_volatility,
+    intraday_seasonality,
     volatility_ratio,
 )
 from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
@@ -83,9 +88,12 @@ from hft_hmm.strategy import (
 __all__ = [
     "ALL_CATEGORIES",
     "BACKTEST_METRICS_REFERENCE",
+    "DEFAULT_BUCKET_MINUTES",
+    "DEFAULT_EXCHANGE_TZ",
     "ENGINEERING_APPROXIMATION",
     "EVALUATION_LAYER",
     "EXPERIMENT_CONFIG_REFERENCE",
+    "INTRADAY_SEASONALITY_REFERENCE",
     "NON_REPRODUCIBLE_WARNING",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
@@ -107,6 +115,7 @@ __all__ = [
     "PLRStateSummary",
     "ProjectInfo",
     "RunArtifacts",
+    "SeasonalityConfig",
     "StateGrid",
     "VolatilityRatioConfig",
     "WalkForwardConfig",
@@ -147,6 +156,7 @@ __all__ = [
     "summarize_backtest",
     "thresholded_signal",
     "train_test_split_time",
+    "intraday_seasonality",
     "validate_market_data",
     "volatility_ratio",
     "walk_forward",
