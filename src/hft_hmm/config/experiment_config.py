@@ -213,7 +213,7 @@ class ExperimentConfig:
             n_iter=int(wf_raw["n_iter"]),
             tol=float(wf_raw["tol"]),
             min_variance=float(wf_raw["min_variance"]),
-            variance_floor_policy=str(wf_raw["variance_floor_policy"]),
+            variance_floor_policy=wf_raw["variance_floor_policy"],
         )
         return cls(
             data=DataSourceConfig.from_dict(data["data"]),
