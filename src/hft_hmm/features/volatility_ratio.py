@@ -84,9 +84,7 @@ def ewma_volatility(
 
     values = returns.to_numpy(dtype=float)
     if not np.isfinite(values).all():
-        raise ValueError(
-            "returns must be finite; drop or mask non-finite values before calling."
-        )
+        raise ValueError("returns must be finite; drop or mask non-finite values before calling.")
 
     squared = values**2
     sigma = np.full(values.shape[0], np.nan, dtype=float)
