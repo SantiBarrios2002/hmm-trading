@@ -77,7 +77,7 @@ def intraday_seasonality(
     )
     if config is not None and kwargs_given:
         raise TypeError(
-            "intraday_seasonality does not accept keyword parameters when a " "config is provided."
+            "intraday_seasonality does not accept keyword parameters when a config is provided."
         )
     if config is None:
         config = SeasonalityConfig(
