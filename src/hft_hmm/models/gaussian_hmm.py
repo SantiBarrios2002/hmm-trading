@@ -120,6 +120,18 @@ class GaussianHMMResult:
             raise ValueError("variances must contain only finite values.")
         if not np.all(variances > 0.0):
             raise ValueError("variances must be strictly positive.")
+        if not np.isfinite(self.min_variance) or self.min_variance <= 0.0:
+            raise ValueError(
+                "min_variance must be a finite strictly positive float, "
+                f"got {self.min_variance!r}."
+            )
+        if not np.all(variances >= self.min_variance):
+            raise ValueError(
+                "variances must all be >= min_variance "
+                f"({self.min_variance!r}); got minimum {float(variances.min())!r}. "
+                "Route construction through GaussianHMMWrapper so the floor is "
+                "enforced consistently."
+            )
         if not np.all(np.isfinite(transmat)):
             raise ValueError("transition_matrix must contain only finite values.")
         if not np.all(transmat >= 0.0):
@@ -138,11 +150,6 @@ class GaussianHMMResult:
             raise ValueError("means must match state_grid.means.")
         if self.n_observations < 1:
             raise ValueError("n_observations must be positive.")
-        if not np.isfinite(self.min_variance) or self.min_variance <= 0.0:
-            raise ValueError(
-                "min_variance must be a finite strictly positive float, "
-                f"got {self.min_variance!r}."
-            )
 
         if history.ndim != 1:
             raise ValueError(
@@ -262,6 +269,12 @@ class GaussianHMMWrapper:
             policy=self.variance_floor_policy,
         )
         log_likelihood = float(model.score(reshaped))
+        # Keep ``em_log_likelihood_history`` as the raw EM iterate history
+        # (pre-clamp): clamping raises variances above the EM optimum, so the
+        # post-clamp score can be lower than the last iterate. Appending it
+        # would spuriously break ``em_log_likelihood_is_monotone`` on runs
+        # where EM itself was monotone. ``log_likelihood`` reflects the
+        # post-clamp score; ``em_log_likelihood_history`` reflects EM.
         em_log_likelihood_history = np.array(model.monitor_.history, dtype=float)
 
         means_raw = model.means_.reshape(-1)

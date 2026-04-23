@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from hft_hmm.core import StateGrid, default_labels
 from hft_hmm.data import load_csv_market_data
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.plr_baseline import fit_piecewise_linear_regression
@@ -273,6 +274,28 @@ def test_constructor_rejects_non_finite_min_variance(min_variance: float):
 def test_constructor_rejects_unknown_variance_floor_policy():
     with pytest.raises(ValueError, match="variance_floor_policy"):
         GaussianHMMWrapper(n_states=2, variance_floor_policy="quiet")  # type: ignore[arg-type]
+
+
+def test_result_rejects_variances_below_min_variance():
+    means = np.array([-0.5, 0.5])
+    state_grid = StateGrid(k=2, means=means, labels=default_labels(2))
+    min_variance = 1e-4
+    variances_below_floor = np.array([1e-6, 0.1])
+
+    with pytest.raises(ValueError, match=">= min_variance"):
+        GaussianHMMResult(
+            state_grid=state_grid,
+            means=means,
+            variances=variances_below_floor,
+            transition_matrix=np.array([[0.5, 0.5], [0.5, 0.5]]),
+            initial_distribution=np.array([0.5, 0.5]),
+            log_likelihood=-10.0,
+            n_observations=100,
+            converged=True,
+            n_iter=5,
+            random_state=0,
+            min_variance=min_variance,
+        )
 
 
 def test_result_is_frozen_and_arrays_read_only():

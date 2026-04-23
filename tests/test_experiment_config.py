@@ -464,6 +464,35 @@ def test_from_dict_rejects_legacy_walk_forward_without_variance_floor_policy() -
         ExperimentConfig.from_dict(payload)
 
 
+def test_from_dict_rejects_unknown_variance_floor_policy() -> None:
+    payload = {
+        "data": {
+            "kind": "csv",
+            "path": "tests/fixtures/es_1min_sample.csv",
+            "symbol": None,
+            "start": None,
+            "end": None,
+        },
+        "frequency": "1min",
+        "cost_bps_per_turnover": 0.0,
+        "sha256": SAMPLE_SHA256,
+        "walk_forward": {
+            "h_days": 3,
+            "t_days": 1,
+            "retrain_every_days": 1,
+            "k_values": [2],
+            "random_state": 0,
+            "n_iter": 50,
+            "tol": 1e-4,
+            "min_variance": 1e-8,
+            "variance_floor_policy": "clip",
+        },
+        "notes": "",
+    }
+    with pytest.raises(ValueError, match="variance_floor_policy"):
+        ExperimentConfig.from_dict(payload)
+
+
 def test_run_id_changes_when_variance_floor_policy_changes() -> None:
     base = ExperimentConfig(
         data=_csv_data(),

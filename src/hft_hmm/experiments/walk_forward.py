@@ -129,6 +129,7 @@ class WalkForwardConfig:
 
         object.__setattr__(self, "retrain_every_days", int(retrain_every_days))
         object.__setattr__(self, "k_values", k_tuple)
+        object.__setattr__(self, "min_variance", float(self.min_variance))
 
 
 @dataclass(frozen=True)
