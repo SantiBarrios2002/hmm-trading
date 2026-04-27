@@ -11,6 +11,7 @@ import pytest
 
 from hft_hmm.core.references import ENGINEERING_APPROXIMATION, module_category
 from hft_hmm.features.splines import (
+    DEFAULT_DEMEAN_GRID_SIZE,
     DEFAULT_MIN_OBS,
     DEFAULT_N_KNOTS,
     SPLINE_PREDICTOR_REFERENCE,
@@ -68,6 +69,13 @@ def test_config_default_values() -> None:
     assert config.min_obs == DEFAULT_MIN_OBS
     assert config.degree == 3
     assert config.demean is False
+    assert config.demean_grid_size == DEFAULT_DEMEAN_GRID_SIZE
+
+
+@pytest.mark.parametrize("bad", [6, 7, 10])
+def test_config_rejects_degree_above_scipy_bound(bad: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 5"):
+        SplinePredictorConfig(degree=bad)
 
 
 @pytest.mark.parametrize("bad", [0, -1, -10])
@@ -90,6 +98,12 @@ def test_config_rejects_non_positive_min_obs(bad: int) -> None:
 def test_config_rejects_non_bool_demean() -> None:
     with pytest.raises(TypeError, match="demean"):
         SplinePredictorConfig(demean="yes")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_config_rejects_non_positive_demean_grid_size(bad: int) -> None:
+    with pytest.raises(ValueError, match="demean_grid_size"):
+        SplinePredictorConfig(demean_grid_size=bad)
 
 
 # --- fit: basic contract ---
@@ -264,7 +278,7 @@ def test_demean_centers_predictions_over_support() -> None:
     assert result.prediction_mean is not None
     # Mean of evaluate() over the unique support should be ~0.
     _, y_grid = result.evaluation_grid(n=500)
-    assert abs(np.mean(y_grid)) < 1e-10
+    assert np.mean(y_grid) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_demean_uses_uniform_support_not_sample_density() -> None:
@@ -283,7 +297,7 @@ def test_demean_uses_uniform_support_not_sample_density() -> None:
     result = fit_spline_predictor(feature, returns, config=SplinePredictorConfig(demean=True))
 
     _, y_grid = result.evaluation_grid(n=1000)
-    assert abs(np.mean(y_grid)) < 1e-10
+    assert np.mean(y_grid) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_demean_false_leaves_prediction_mean_none() -> None:

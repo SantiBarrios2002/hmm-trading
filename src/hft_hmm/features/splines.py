@@ -38,6 +38,7 @@ SPLINE_PREDICTOR_REFERENCE: Final[PaperReference] = reference("§4.1", "spline-b
 DEFAULT_N_KNOTS: Final[int] = 5
 DEFAULT_DEGREE: Final[int] = 3
 DEFAULT_MIN_OBS: Final[int] = 20
+DEFAULT_DEMEAN_GRID_SIZE: Final[int] = 1_000
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,8 @@ class SplinePredictorConfig:
     NaN-dropping; fewer raises ``ValueError``.
     ``demean`` subtracts the mean prediction evaluated over all unique observed
     x values so the spline is centered on its own support.
+    ``demean_grid_size`` controls the number of support points used when
+    estimating the demeaning mean.
 
     References: §4.1 spline-based predictor
     """
@@ -60,11 +63,15 @@ class SplinePredictorConfig:
     degree: int = DEFAULT_DEGREE
     min_obs: int = DEFAULT_MIN_OBS
     demean: bool = False
+    demean_grid_size: int = DEFAULT_DEMEAN_GRID_SIZE
 
     def __post_init__(self) -> None:
         _validate_positive_int(self.n_knots, "n_knots")
         _validate_positive_int(self.degree, "degree")
+        if self.degree > 5:
+            raise ValueError(f"degree must be between 1 and 5; got {self.degree}.")
         _validate_positive_int(self.min_obs, "min_obs")
+        _validate_positive_int(self.demean_grid_size, "demean_grid_size")
         if not isinstance(self.demean, bool):
             raise TypeError(f"demean must be a bool; got {type(self.demean).__name__}.")
 
@@ -94,9 +101,7 @@ class SplinePredictorResult:
     n_knots_effective: int
     prediction_mean: float | None
 
-    def evaluate(
-        self, x: float | np.ndarray | pd.Series
-    ) -> float | np.ndarray | pd.Series:
+    def evaluate(self, x: float | np.ndarray | pd.Series) -> float | np.ndarray | pd.Series:
         """Return predicted returns for scalar, array, or Series input.
 
         A ``pd.Series`` input preserves the original index. Values outside
@@ -106,7 +111,7 @@ class SplinePredictorResult:
         """
         if isinstance(x, pd.Series):
             index = x.index
-            arr = np.atleast_1d(np.asarray(x, dtype=np.float64))
+            arr = np.asarray(x, dtype=np.float64)
             predicted = np.asarray(self.spline(arr), dtype=np.float64)
             if self.prediction_mean is not None:
                 predicted = predicted - self.prediction_mean
@@ -166,9 +171,7 @@ def fit_spline_predictor(
         raise TypeError(f"returns must be a pd.Series; got {type(returns).__name__}.")
 
     future_returns = returns.shift(-1)
-    aligned = pd.concat(
-        [feature.rename("x"), future_returns.rename("y")], axis=1
-    ).dropna()
+    aligned = pd.concat([feature.rename("x"), future_returns.rename("y")], axis=1).dropna()
 
     x_arr = aligned["x"].to_numpy(dtype=np.float64)
     y_arr = aligned["y"].to_numpy(dtype=np.float64)
@@ -220,7 +223,7 @@ def fit_spline_predictor(
 
     prediction_mean: float | None = None
     if config.demean:
-        support_grid = np.linspace(x_min, x_max, 1_000)
+        support_grid = np.linspace(x_min, x_max, config.demean_grid_size)
         prediction_mean = float(np.mean(fitted(support_grid)))
 
     return SplinePredictorResult(
