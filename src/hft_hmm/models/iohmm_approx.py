@@ -98,7 +98,12 @@ class BucketedTransitionResult:
         boundaries = np.asarray(self.bucket_boundaries, dtype=float).copy()
         matrices = np.asarray(self.transition_matrices, dtype=float).copy()
         baseline = np.asarray(self.baseline_transition_matrix, dtype=float).copy()
-        counts = np.asarray(self.bucket_observation_counts, dtype=int).copy()
+        counts_raw = np.asarray(self.bucket_observation_counts)
+        if not np.all(np.isfinite(counts_raw)):
+            raise ValueError("bucket_observation_counts must contain only finite values.")
+        if not np.allclose(counts_raw, np.round(counts_raw)):
+            raise ValueError("bucket_observation_counts must contain only integer values.")
+        counts = counts_raw.astype(int).copy()
 
         if boundaries.ndim != 1 or len(boundaries) != n_buckets - 1:
             raise ValueError(
