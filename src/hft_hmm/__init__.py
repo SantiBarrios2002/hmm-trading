@@ -46,6 +46,18 @@ from hft_hmm.experiments import (
     walk_forward,
 )
 from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, run_experiment
+from hft_hmm.experiments.standalone_predictor import (
+    STANDALONE_PREDICTOR_REFERENCE,
+    StandaloneExperimentConfig,
+    StandalonePredictorConfig,
+    StandalonePredictorResult,
+    StandalonePredictorWindow,
+    StandaloneRunArtifacts,
+    StandaloneWalkForwardConfig,
+    run_standalone_experiment,
+    standalone_predictor_backtest,
+    standalone_run_id,
+)
 from hft_hmm.features import (
     DEFAULT_BUCKET_MINUTES,
     DEFAULT_EXCHANGE_TZ,
@@ -95,6 +107,13 @@ __all__ = [
     "EXPERIMENT_CONFIG_REFERENCE",
     "INTRADAY_SEASONALITY_REFERENCE",
     "NON_REPRODUCIBLE_WARNING",
+    "STANDALONE_PREDICTOR_REFERENCE",
+    "StandaloneExperimentConfig",
+    "StandalonePredictorConfig",
+    "StandalonePredictorResult",
+    "StandalonePredictorWindow",
+    "StandaloneRunArtifacts",
+    "StandaloneWalkForwardConfig",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
     "SIGNAL_REFERENCE",
@@ -149,6 +168,9 @@ __all__ = [
     "resample_prices",
     "run_experiment",
     "run_id",
+    "run_standalone_experiment",
+    "standalone_predictor_backtest",
+    "standalone_run_id",
     "sharpe_ratio",
     "sign_signal",
     "signal_turnover",
