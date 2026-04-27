@@ -10,6 +10,8 @@ import pytest
 from hft_hmm.core.references import ENGINEERING_APPROXIMATION, module_category
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
+    BucketedTransitionResult,
+    bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
 
@@ -69,16 +71,28 @@ def test_config_rejects_n_buckets_below_2() -> None:
         BucketedTransitionConfig(n_buckets=1)
 
 
+def test_config_rejects_non_integer_n_buckets() -> None:
+    with pytest.raises(TypeError, match="n_buckets must be an integer"):
+        BucketedTransitionConfig(n_buckets=2.5)  # type: ignore[arg-type]
+
+
 def test_config_rejects_nonpositive_smoothing() -> None:
     with pytest.raises(ValueError, match="smoothing must be positive"):
         BucketedTransitionConfig(smoothing=0.0)
     with pytest.raises(ValueError, match="smoothing must be positive"):
         BucketedTransitionConfig(smoothing=-1.0)
+    with pytest.raises(ValueError, match="smoothing must be positive"):
+        BucketedTransitionConfig(smoothing=float("nan"))
 
 
 def test_config_rejects_grid_size_below_2() -> None:
     with pytest.raises(ValueError, match="grid_size must be at least 2"):
         BucketedTransitionConfig(grid_size=1)
+
+
+def test_config_rejects_non_integer_grid_size() -> None:
+    with pytest.raises(TypeError, match="grid_size must be an integer"):
+        BucketedTransitionConfig(grid_size=2.5)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +112,36 @@ def test_result_arrays_are_read_only() -> None:
     result = fit_bucketed_transition_model(states, x)
     with pytest.raises(ValueError):
         result.transition_matrices[0, 0, 0] = 999.0
+
+
+def test_result_rejects_bad_transition_matrix_rows() -> None:
+    cfg = BucketedTransitionConfig(n_buckets=2)
+    with pytest.raises(ValueError, match="transition_matrices rows must sum to 1"):
+        BucketedTransitionResult(
+            config=cfg,
+            bucket_boundaries=np.array([0.5]),
+            transition_matrices=np.array(
+                [
+                    [[0.7, 0.7], [0.5, 0.5]],
+                    [[0.5, 0.5], [0.5, 0.5]],
+                ]
+            ),
+            baseline_transition_matrix=np.array([[0.5, 0.5], [0.5, 0.5]]),
+            bucket_observation_counts=np.array([1, 1]),
+        )
+
+
+def test_result_rejects_negative_bucket_counts() -> None:
+    cfg = BucketedTransitionConfig(n_buckets=2)
+    matrices = np.repeat(np.array([[[0.5, 0.5], [0.5, 0.5]]]), repeats=2, axis=0)
+    with pytest.raises(ValueError, match="bucket_observation_counts must be nonnegative"):
+        BucketedTransitionResult(
+            config=cfg,
+            bucket_boundaries=np.array([0.5]),
+            transition_matrices=matrices,
+            baseline_transition_matrix=np.array([[0.5, 0.5], [0.5, 0.5]]),
+            bucket_observation_counts=np.array([1, -1]),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +180,13 @@ def test_bucket_index_for_two_bucket_case() -> None:
     assert result.bucket_index_for(1.0) == 1
 
 
+def test_bucket_index_for_rejects_nonfinite_value() -> None:
+    states, x = _make_states_and_x()
+    result = fit_bucketed_transition_model(states, x)
+    with pytest.raises(ValueError, match="x must be finite"):
+        result.bucket_index_for(float("nan"))
+
+
 # ---------------------------------------------------------------------------
 # transition_matrix_for
 # ---------------------------------------------------------------------------
@@ -147,12 +198,8 @@ def test_transition_matrix_for_returns_correct_slice() -> None:
     result = fit_bucketed_transition_model(
         states, x, bucket_boundaries=boundaries, config=BucketedTransitionConfig(n_buckets=2)
     )
-    np.testing.assert_array_equal(
-        result.transition_matrix_for(0.2), result.transition_matrices[0]
-    )
-    np.testing.assert_array_equal(
-        result.transition_matrix_for(0.8), result.transition_matrices[1]
-    )
+    np.testing.assert_array_equal(result.transition_matrix_for(0.2), result.transition_matrices[0])
+    np.testing.assert_array_equal(result.transition_matrix_for(0.8), result.transition_matrices[1])
 
 
 def test_transition_matrix_for_differs_across_buckets_on_synthetic_fixture() -> None:
@@ -166,9 +213,9 @@ def test_transition_matrix_for_differs_across_buckets_on_synthetic_fixture() -> 
     # Low-x bucket: state 0 is sticky → A[0, 0, 0] should be notably higher than A[1, 0, 0]
     a_low = result.transition_matrix_for(0.2)
     a_high = result.transition_matrix_for(0.8)
-    assert a_low[0, 0] > a_high[0, 0], (
-        f"Expected A_low[0,0]={a_low[0,0]:.3f} > A_high[0,0]={a_high[0,0]:.3f}"
-    )
+    assert (
+        a_low[0, 0] > a_high[0, 0]
+    ), f"Expected A_low[0,0]={a_low[0,0]:.3f} > A_high[0,0]={a_high[0,0]:.3f}"
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +308,9 @@ def test_smoothing_strength_affects_sparse_bucket() -> None:
     x = np.concatenate([np.full(T - 2, 0.1), [0.9, 0.9]])  # nearly all in bucket 0
     boundaries = np.array([0.5])
     result_strong = fit_bucketed_transition_model(
-        states, x, bucket_boundaries=boundaries,
+        states,
+        x,
+        bucket_boundaries=boundaries,
         config=BucketedTransitionConfig(n_buckets=2, smoothing=1000.0),
     )
     # With extreme smoothing, bucket 1 (sparse) should be nearly identical to baseline
@@ -279,6 +328,13 @@ def test_invalid_n_states_raises() -> None:
     x = np.array([0.1, 0.2, 0.3, 0.4])
     with pytest.raises(ValueError, match="n_states must be at least 2"):
         fit_bucketed_transition_model(states, x, n_states=1)
+
+
+def test_non_integer_n_states_raises() -> None:
+    states = np.array([0, 1, 0, 1])
+    x = np.array([0.1, 0.2, 0.3, 0.4])
+    with pytest.raises(TypeError, match="n_states must be an integer"):
+        fit_bucketed_transition_model(states, x, n_states=2.5)  # type: ignore[arg-type]
 
 
 def test_state_sequence_out_of_range_raises() -> None:
@@ -299,6 +355,20 @@ def test_state_sequence_must_be_1d() -> None:
     states = np.array([[0, 1], [0, 1]])
     x = np.array([0.1, 0.2, 0.3, 0.4])
     with pytest.raises(ValueError, match="one-dimensional"):
+        fit_bucketed_transition_model(states, x)
+
+
+def test_state_sequence_rejects_fractional_values() -> None:
+    states = np.array([0.0, 1.0, 1.2, 0.0])
+    x = np.array([0.1, 0.2, 0.3, 0.4])
+    with pytest.raises(ValueError, match="integer-valued"):
+        fit_bucketed_transition_model(states, x)
+
+
+def test_state_sequence_rejects_nonfinite_values() -> None:
+    states = np.array([0.0, 1.0, float("nan"), 0.0])
+    x = np.array([0.1, 0.2, 0.3, 0.4])
+    with pytest.raises(ValueError, match="finite"):
         fit_bucketed_transition_model(states, x)
 
 
@@ -333,7 +403,8 @@ def test_bad_boundaries_unsorted_raises() -> None:
     x = np.array([0.1, 0.5, 0.9, 0.3, 0.7])
     with pytest.raises(ValueError, match="strictly increasing"):
         fit_bucketed_transition_model(
-            states, x,
+            states,
+            x,
             bucket_boundaries=np.array([0.7, 0.3]),
             config=BucketedTransitionConfig(n_buckets=3),
         )
@@ -344,7 +415,8 @@ def test_bad_boundaries_wrong_length_raises() -> None:
     x = np.array([0.1, 0.5, 0.9, 0.3, 0.7])
     with pytest.raises(ValueError, match="interior value"):
         fit_bucketed_transition_model(
-            states, x,
+            states,
+            x,
             bucket_boundaries=np.array([0.5]),  # need 2 for n_buckets=3
             config=BucketedTransitionConfig(n_buckets=3),
         )
@@ -355,7 +427,8 @@ def test_bad_boundaries_nonfinite_raises() -> None:
     x = np.array([0.1, 0.5, 0.9, 0.3, 0.7])
     with pytest.raises(ValueError, match="finite"):
         fit_bucketed_transition_model(
-            states, x,
+            states,
+            x,
             bucket_boundaries=np.array([float("nan")]),
             config=BucketedTransitionConfig(n_buckets=2),
         )
@@ -390,7 +463,7 @@ def test_synthetic_two_bucket_fixture_produces_measurably_different_matrices() -
         bucket_boundaries=np.array([0.5]),
         config=BucketedTransitionConfig(n_buckets=2, smoothing=0.5),
     )
-    a_low = result.transition_matrices[0]   # x < 0.5: state 0 sticky
+    a_low = result.transition_matrices[0]  # x < 0.5: state 0 sticky
     a_high = result.transition_matrices[1]  # x >= 0.5: state 1 sticky
 
     # State 0 self-transition should be higher in the low-x bucket
@@ -398,9 +471,9 @@ def test_synthetic_two_bucket_fixture_produces_measurably_different_matrices() -
     # State 1 self-transition should be higher in the high-x bucket
     assert a_high[1, 1] > 0.7, f"A_high[1,1]={a_high[1,1]:.3f}"
     # Difference in A[0, 0, 0] should be substantial
-    assert a_low[0, 0] - a_high[0, 0] > 0.3, (
-        f"Expected gap > 0.3; got {a_low[0,0]:.3f} vs {a_high[0,0]:.3f}"
-    )
+    assert (
+        a_low[0, 0] - a_high[0, 0] > 0.3
+    ), f"Expected gap > 0.3; got {a_low[0,0]:.3f} vs {a_high[0,0]:.3f}"
 
 
 # ---------------------------------------------------------------------------
@@ -430,32 +503,55 @@ def test_custom_baseline_is_used_for_smoothing() -> None:
 
 
 def test_bucket_boundaries_from_spline_grid() -> None:
-    from unittest.mock import MagicMock
-
-    from hft_hmm.models.iohmm_approx import bucket_boundaries_from_spline_grid
-
-    spline = MagicMock()
-    spline.x_min = 0.0
-    spline.x_max = 1.0
+    class SplineStub:
+        def evaluation_grid(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+            x_grid = np.linspace(0.0, 1.0, n)
+            return x_grid, np.zeros(n)
 
     cfg = BucketedTransitionConfig(n_buckets=3)
-    boundaries = bucket_boundaries_from_spline_grid(spline, config=cfg)
+    boundaries = bucket_boundaries_from_spline_grid(SplineStub(), config=cfg)
 
     assert boundaries.shape == (2,)  # n_buckets - 1
     np.testing.assert_allclose(boundaries, [1 / 3, 2 / 3], atol=1e-10)
 
 
 def test_bucket_boundaries_from_spline_grid_uses_default_config() -> None:
-    from unittest.mock import MagicMock
+    class SplineStub:
+        def evaluation_grid(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+            x_grid = np.linspace(0.0, 3.0, n)
+            return x_grid, np.zeros(n)
 
-    from hft_hmm.models.iohmm_approx import bucket_boundaries_from_spline_grid
-
-    spline = MagicMock()
-    spline.x_min = 0.0
-    spline.x_max = 3.0
-
-    boundaries = bucket_boundaries_from_spline_grid(spline)
+    boundaries = bucket_boundaries_from_spline_grid(SplineStub())
     assert len(boundaries) == BucketedTransitionConfig().n_buckets - 1
+
+
+def test_bucket_boundaries_from_spline_grid_uses_config_grid_size() -> None:
+    class SplineStub:
+        def __init__(self) -> None:
+            self.received_n: int | None = None
+
+        def evaluation_grid(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+            self.received_n = n
+            x_grid = np.linspace(0.0, 1.0, n)
+            return x_grid, np.zeros(n)
+
+    spline = SplineStub()
+    cfg = BucketedTransitionConfig(n_buckets=2, grid_size=17)
+
+    bucket_boundaries_from_spline_grid(spline, config=cfg)
+
+    assert spline.received_n == 17
+
+
+def test_bucket_boundaries_from_spline_grid_rejects_nonmonotone_grid() -> None:
+    class SplineStub:
+        def evaluation_grid(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+            return np.array([0.0, 0.5, 0.5, 1.0]), np.zeros(n)
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        bucket_boundaries_from_spline_grid(
+            SplineStub(), config=BucketedTransitionConfig(n_buckets=2, grid_size=4)
+        )
 
 
 # ---------------------------------------------------------------------------
