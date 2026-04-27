@@ -162,6 +162,21 @@ def test_standalone_predictor_config_rejects_invalid_subconfigs() -> None:
         )
 
 
+def test_standalone_experiment_config_rejects_non_string_sha256() -> None:
+    from hft_hmm.config.experiment_config import DataSourceConfig
+
+    with pytest.raises(ValueError, match="sha256 must be a string"):
+        StandaloneExperimentConfig(
+            data=DataSourceConfig(kind="csv", path=str(FIXTURE_CSV)),
+            frequency="1min",
+            predictor="volatility_ratio",
+            walk_forward=StandaloneWalkForwardConfig(
+                h_days=10, t_days=2, retrain_every_days=2
+            ),
+            sha256=123,  # type: ignore[arg-type]
+        )
+
+
 # ---------------------------------------------------------------------------
 # Two-window walk-forward on synthetic fixture
 # ---------------------------------------------------------------------------

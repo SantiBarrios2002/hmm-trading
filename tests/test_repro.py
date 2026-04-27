@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from hft_hmm.config import DataSourceConfig, ExperimentConfig, compute_file_sha256, run_id
 from hft_hmm.core import EVALUATION_LAYER
@@ -126,7 +127,9 @@ def test_run_experiment_force_preserves_previous_run_if_replacement_fails(
     def broken_loader(path):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("hft_hmm.experiments.runner.load_csv_market_data", broken_loader)
+    monkeypatch.setattr(
+        "hft_hmm.experiments._data_loading.load_csv_market_data", broken_loader
+    )
     with pytest.raises(RuntimeError, match="boom"):
         run_experiment(config, runs_root=tmp_path, force=True)
 
@@ -150,7 +153,7 @@ def test_run_experiment_emits_non_reproducible_warning_for_yfinance(
         return sample.copy()
 
     monkeypatch.setattr(
-        "hft_hmm.experiments.runner.load_yfinance_market_data",
+        "hft_hmm.experiments._data_loading.load_yfinance_market_data",
         fake_yfinance_loader,
     )
     cfg = ExperimentConfig(
@@ -355,6 +358,39 @@ def test_repro_cli_runs_standalone_predictor_config_end_to_end(tmp_path: Path) -
     assert metrics["reproducible"] is True
     assert metrics["n_windows"] >= 1
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
+
+
+def test_repro_cli_warns_when_standalone_config_contains_hmm_only_fields(
+    tmp_path: Path,
+) -> None:
+    config = StandaloneExperimentConfig.from_yaml(STANDALONE_VOL_CONFIG)
+    raw = config.to_dict()
+    walk_forward = raw["walk_forward"]
+    assert isinstance(walk_forward, dict)
+    walk_forward["k_values"] = [2]
+    walk_forward["n_iter"] = 100
+
+    config_yaml = tmp_path / "standalone_with_hmm_fields.yaml"
+    config_yaml.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPRO_SCRIPT),
+            str(config_yaml),
+            "--runs-root",
+            str(tmp_path / "runs"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert (
+        "HMM-only walk_forward fields will be ignored: k_values, n_iter"
+        in completed.stderr
+    )
 
 
 def test_repro_cli_example_config_emits_no_convergence_warning(tmp_path: Path) -> None:

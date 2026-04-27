@@ -23,7 +23,6 @@ import os
 import shutil
 import tempfile
 import uuid
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -35,7 +34,6 @@ import yaml
 from hft_hmm.config.experiment_config import (
     DataSourceConfig,
     Frequency,
-    compute_file_sha256,
 )
 from hft_hmm.core import EVALUATION_LAYER, PaperReference, reference
 from hft_hmm.evaluation import (
@@ -45,6 +43,10 @@ from hft_hmm.evaluation import (
     max_drawdown,
     sharpe_ratio,
     signal_turnover,
+)
+from hft_hmm.experiments._data_loading import (
+    load_returns_from_source,
+    validate_data_reproducibility,
 )
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
 from hft_hmm.features.splines import SplinePredictorConfig, fit_spline_predictor
@@ -60,14 +62,6 @@ PredictorKind = Literal["volatility_ratio", "seasonality"]
 _PREDICTOR_KINDS: Final[tuple[str, ...]] = ("volatility_ratio", "seasonality")
 _VALID_FREQUENCIES: Final[tuple[str, ...]] = ("1min", "5min", "1D")
 _SHA256_HEX_LENGTH: Final[int] = 64
-_YFINANCE_INTERVAL: Final[dict[str, str]] = {"1min": "1m", "5min": "5m", "1D": "1d"}
-_NON_REPRODUCIBLE_WARNING: Final[str] = (
-    "yfinance data may drift across vendor updates; re-runs may not match bit-for-bit."
-)
-_DATA_FINGERPRINT_MISMATCH_WARNING: Final[str] = (
-    "Configured sha256 does not match file contents at {path}; "
-    "the run will be marked non-reproducible."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +460,11 @@ class StandaloneExperimentConfig:
         if self.data.is_reproducible:
             if self.sha256 is None:
                 raise ValueError("StandaloneExperimentConfig for file-backed data requires sha256.")
+            if not isinstance(self.sha256, str):
+                raise ValueError(
+                    "sha256 must be a string for file-backed standalone experiments; "
+                    f"got {type(self.sha256).__name__}."
+                )
             normalized = self.sha256.lower()
             if len(normalized) != _SHA256_HEX_LENGTH or any(
                 c not in "0123456789abcdef" for c in normalized
@@ -752,52 +751,11 @@ def _summary_row(
 
 
 def _load_returns(config: StandaloneExperimentConfig) -> pd.Series:
-    from hft_hmm.data import (
-        load_csv_market_data,
-        load_databento_parquet,
-        load_yfinance_market_data,
-    )
-    from hft_hmm.preprocessing import compute_log_returns, resample_prices
-
-    if config.data.kind == "csv":
-        assert config.data.path is not None
-        frame = load_csv_market_data(config.data.path)
-    elif config.data.kind == "databento_parquet":
-        assert config.data.path is not None
-        assert config.data.symbol is not None
-        frame = load_databento_parquet(config.data.path, symbol=config.data.symbol)
-    else:
-        assert config.data.symbol is not None
-        assert config.data.start is not None and config.data.end is not None
-        frame = load_yfinance_market_data(
-            config.data.symbol,
-            start=config.data.start,
-            end=config.data.end,
-            interval=_YFINANCE_INTERVAL[config.frequency],
-        )
-
-    resampled = resample_prices(frame, freq=config.frequency)
-    prices = resampled.set_index("timestamp")["price"]
-    returns = compute_log_returns(prices).dropna()
-    returns.name = "log_return"
-    return returns
+    return load_returns_from_source(config.data, frequency=config.frequency)
 
 
 def _validate_standalone_reproducibility(config: StandaloneExperimentConfig) -> bool:
-    if not config.is_reproducible:
-        warnings.warn(_NON_REPRODUCIBLE_WARNING, UserWarning, stacklevel=3)
-        return False
-    assert config.data.path is not None
-    assert config.sha256 is not None
-    actual = compute_file_sha256(config.data.path)
-    if actual != config.sha256:
-        warnings.warn(
-            _DATA_FINGERPRINT_MISMATCH_WARNING.format(path=config.data.path),
-            UserWarning,
-            stacklevel=3,
-        )
-        return False
-    return True
+    return validate_data_reproducibility(config, stacklevel=3)
 
 
 def _write_artifacts(
