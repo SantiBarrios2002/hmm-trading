@@ -1,11 +1,11 @@
-"""Spline-based predictor fitting — engineering approximation of §4.2.
+"""Spline-based predictor fitting — engineering approximation of §4.1.
 
 This module fits a deterministic cubic spline f(x_t) ≈ E[r_{t+1} | x_t]
 from aligned side-information and future-return observations. It is the
 fitting primitive for standalone predictor backtests (Issue 22) and the
 IOHMM-style bucketed transition approximation (Issue 16).
 
-This is an engineering approximation: Christensen, Turner & Godsill (§4.2)
+This is an engineering approximation: Christensen, Turner & Godsill (§4.1)
 describe using a spline-estimated conditional mean to derive regime bucket
 boundaries; the exact numerical procedure is not specified. This module
 implements least-squares cubic spline regression via
@@ -18,7 +18,7 @@ derivation (locating sign changes or crossings on the fitted spline) is out of
 scope; callers should use ``SplinePredictorResult.evaluation_grid()`` to obtain
 a dense (x, y) grid from which Issue 16 can locate bucket edges.
 
-References: §4.2 spline-based predictor
+References: §4.1 spline-based predictor
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from scipy.interpolate import LSQUnivariateSpline
 from hft_hmm.core.references import ENGINEERING_APPROXIMATION, PaperReference, reference
 
 __category__: Final[str] = ENGINEERING_APPROXIMATION
-SPLINE_PREDICTOR_REFERENCE: Final[PaperReference] = reference("§4.2", "spline-based predictor")
+SPLINE_PREDICTOR_REFERENCE: Final[PaperReference] = reference("§4.1", "spline-based predictor")
 
 DEFAULT_N_KNOTS: Final[int] = 5
 DEFAULT_DEGREE: Final[int] = 3
@@ -53,7 +53,7 @@ class SplinePredictorConfig:
     ``demean`` subtracts the mean prediction evaluated over all unique observed
     x values so the spline is centered on its own support.
 
-    References: §4.2 spline-based predictor
+    References: §4.1 spline-based predictor
     """
 
     n_knots: int = DEFAULT_N_KNOTS
@@ -69,7 +69,7 @@ class SplinePredictorConfig:
             raise TypeError(f"demean must be a bool; got {type(self.demean).__name__}.")
 
 
-@dataclass
+@dataclass(frozen=True)
 class SplinePredictorResult:
     """Fitted spline predictor with evaluation helpers.
 
@@ -79,10 +79,11 @@ class SplinePredictorResult:
     ``knots`` are the interior knot positions actually used after deduplication;
     ``n_knots_effective`` is ``len(knots)`` and may be less than
     ``config.n_knots`` when quantile placement collapsed duplicate positions.
-    ``prediction_mean`` is non-``None`` when ``config.demean=True``; it is
+    ``prediction_mean`` is non-``None`` when ``config.demean=True``; it is the
+    mean fitted value over a uniform grid on the observed support and is
     subtracted from every ``evaluate()`` and ``evaluation_grid()`` call.
 
-    References: §4.2 spline-based predictor
+    References: §4.1 spline-based predictor
     """
 
     spline: Any  # scipy.interpolate.LSQUnivariateSpline
@@ -101,7 +102,7 @@ class SplinePredictorResult:
         A ``pd.Series`` input preserves the original index. Values outside
         ``[x_min, x_max]`` are extrapolated by the spline (scipy default).
 
-        References: §4.2 spline-based predictor
+        References: §4.1 spline-based predictor
         """
         if isinstance(x, pd.Series):
             index = x.index
@@ -120,8 +121,6 @@ class SplinePredictorResult:
 
         if is_scalar:
             return float(predicted[0])
-        if is_scalar:
-            return float(predicted[0])
         return predicted
 
     def evaluation_grid(self, n: int = 200) -> tuple[np.ndarray, np.ndarray]:
@@ -129,7 +128,7 @@ class SplinePredictorResult:
 
         Useful for deriving bucket boundaries from evaluated spline values.
 
-        References: §4.2 spline-based predictor
+        References: §4.1 spline-based predictor
         """
         x_grid = np.linspace(self.x_min, self.x_max, n)
         y_grid = np.asarray(self.spline(x_grid), dtype=np.float64)
@@ -156,7 +155,7 @@ def fit_spline_predictor(
     Pass ``config`` to control knot count, polynomial degree, minimum
     observation threshold, and demeaning.
 
-    References: §4.2 spline-based predictor
+    References: §4.1 spline-based predictor
     """
     if config is None:
         config = SplinePredictorConfig()
@@ -221,7 +220,8 @@ def fit_spline_predictor(
 
     prediction_mean: float | None = None
     if config.demean:
-        prediction_mean = float(np.mean(fitted(x_unique)))
+        support_grid = np.linspace(x_min, x_max, 1_000)
+        prediction_mean = float(np.mean(fitted(support_grid)))
 
     return SplinePredictorResult(
         spline=fitted,

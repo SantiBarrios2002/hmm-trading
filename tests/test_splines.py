@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from dataclasses import FrozenInstanceError
 
 import numpy as np
 import pandas as pd
@@ -53,8 +54,8 @@ def test_module_is_engineering_approximation() -> None:
     assert module_category(splines_module) == ENGINEERING_APPROXIMATION
 
 
-def test_paper_reference_points_to_section_4_2() -> None:
-    assert SPLINE_PREDICTOR_REFERENCE.section == "§4.2"
+def test_paper_reference_points_to_section_4_1() -> None:
+    assert SPLINE_PREDICTOR_REFERENCE.section == "§4.1"
     assert "spline" in SPLINE_PREDICTOR_REFERENCE.topic.lower()
 
 
@@ -119,6 +120,13 @@ def test_result_metadata() -> None:
     assert result.x_max == pytest.approx(feature.iloc[-2], rel=1e-10)
     assert 1 <= result.n_knots_effective <= DEFAULT_N_KNOTS
     assert result.prediction_mean is None  # demean=False default
+
+
+def test_result_object_is_frozen() -> None:
+    feature, returns = _linear_dataset()
+    result = fit_spline_predictor(feature, returns)
+    with pytest.raises(FrozenInstanceError):
+        result.n_obs = 0  # type: ignore[misc]
 
 
 # --- one-step-ahead alignment ---
@@ -256,6 +264,25 @@ def test_demean_centers_predictions_over_support() -> None:
     assert result.prediction_mean is not None
     # Mean of evaluate() over the unique support should be ~0.
     _, y_grid = result.evaluation_grid(n=500)
+    assert abs(np.mean(y_grid)) < 1e-10
+
+
+def test_demean_uses_uniform_support_not_sample_density() -> None:
+    # Most x values are clustered near -1. A sample-density mean would over
+    # weight that region; the implementation should center the fitted function
+    # over the support itself.
+    dense_left = np.linspace(-1.0, -0.8, 220)
+    sparse_right = np.linspace(-0.7, 1.0, 80)
+    x = np.concatenate([dense_left, sparse_right])
+    r = np.empty_like(x)
+    r[0] = 0.0
+    r[1:] = x[:-1]
+    feature = _feature(x)
+    returns = _returns(r)
+
+    result = fit_spline_predictor(feature, returns, config=SplinePredictorConfig(demean=True))
+
+    _, y_grid = result.evaluation_grid(n=1000)
     assert abs(np.mean(y_grid)) < 1e-10
 
 
