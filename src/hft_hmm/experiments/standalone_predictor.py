@@ -259,9 +259,7 @@ def standalone_predictor_backtest(
     References: §4 side-information predictor standalone evaluation (evaluation layer)
     """
     if not isinstance(config, StandalonePredictorConfig):
-        raise TypeError(
-            f"config must be a StandalonePredictorConfig, got {type(config).__name__}."
-        )
+        raise TypeError(f"config must be a StandalonePredictorConfig, got {type(config).__name__}.")
     if not np.isfinite(cost_bps_per_turnover) or cost_bps_per_turnover < 0.0:
         raise ValueError(
             "cost_bps_per_turnover must be a finite non-negative float, "
@@ -532,9 +530,9 @@ class StandaloneExperimentConfig:
         walk_forward = StandaloneWalkForwardConfig(
             h_days=int(wf_raw["h_days"]),
             t_days=int(wf_raw["t_days"]),
-            retrain_every_days=int(wf_raw["retrain_every_days"])
-            if "retrain_every_days" in wf_raw
-            else None,
+            retrain_every_days=(
+                int(wf_raw["retrain_every_days"]) if "retrain_every_days" in wf_raw else None
+            ),
         )
         sp_raw = raw.get("spline", {})
         spline = SplinePredictorConfig(
@@ -583,9 +581,7 @@ class StandaloneExperimentConfig:
     def from_yaml(cls, path: str | Path) -> StandaloneExperimentConfig:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            raise ValueError(
-                f"YAML at {path} must decode to a mapping, got {type(raw).__name__}."
-            )
+            raise ValueError(f"YAML at {path} must decode to a mapping, got {type(raw).__name__}.")
         return cls.from_dict(raw)
 
 

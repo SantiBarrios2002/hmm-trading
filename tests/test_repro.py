@@ -127,9 +127,7 @@ def test_run_experiment_force_preserves_previous_run_if_replacement_fails(
     def broken_loader(path):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        "hft_hmm.experiments._data_loading.load_csv_market_data", broken_loader
-    )
+    monkeypatch.setattr("hft_hmm.experiments._data_loading.load_csv_market_data", broken_loader)
     with pytest.raises(RuntimeError, match="boom"):
         run_experiment(config, runs_root=tmp_path, force=True)
 
@@ -387,10 +385,7 @@ def test_repro_cli_warns_when_standalone_config_contains_hmm_only_fields(
         cwd=REPO_ROOT,
     )
 
-    assert (
-        "HMM-only walk_forward fields will be ignored: k_values, n_iter"
-        in completed.stderr
-    )
+    assert "HMM-only walk_forward fields will be ignored: k_values, n_iter" in completed.stderr
 
 
 def test_repro_cli_example_config_emits_no_convergence_warning(tmp_path: Path) -> None:

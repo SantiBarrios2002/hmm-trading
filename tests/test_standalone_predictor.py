@@ -170,9 +170,7 @@ def test_standalone_experiment_config_rejects_non_string_sha256() -> None:
             data=DataSourceConfig(kind="csv", path=str(FIXTURE_CSV)),
             frequency="1min",
             predictor="volatility_ratio",
-            walk_forward=StandaloneWalkForwardConfig(
-                h_days=10, t_days=2, retrain_every_days=2
-            ),
+            walk_forward=StandaloneWalkForwardConfig(h_days=10, t_days=2, retrain_every_days=2),
             sha256=123,  # type: ignore[arg-type]
         )
 
@@ -237,9 +235,9 @@ def test_no_leakage_training_ends_before_forecast_starts() -> None:
     result = standalone_predictor_backtest(returns, config)
 
     for w in result.windows:
-        assert w.train_end < w.forecast_start, (
-            f"window {w.index}: train_end={w.train_end} >= forecast_start={w.forecast_start}"
-        )
+        assert (
+            w.train_end < w.forecast_start
+        ), f"window {w.index}: train_end={w.train_end} >= forecast_start={w.forecast_start}"
 
 
 def test_leakage_guard_assertion_trips_on_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,9 +288,9 @@ def test_standalone_does_not_instantiate_gaussian_hmm(monkeypatch: pytest.Monkey
     config = _vol_ratio_config()
     standalone_predictor_backtest(returns, config)
 
-    assert len(instantiated) == 0, (
-        "GaussianHMMWrapper was instantiated inside the standalone predictor path"
-    )
+    assert (
+        len(instantiated) == 0
+    ), "GaussianHMMWrapper was instantiated inside the standalone predictor path"
 
 
 # ---------------------------------------------------------------------------
