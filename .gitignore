@@ -47,6 +47,7 @@ Thumbs.db
 data/*
 !data/README.md
 *.pdf
+docs/
 
 # Experiment artifacts
 runs/

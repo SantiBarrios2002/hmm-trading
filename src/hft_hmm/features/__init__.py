@@ -7,6 +7,14 @@ from hft_hmm.features.seasonality import (
     SeasonalityConfig,
     intraday_seasonality,
 )
+from hft_hmm.features.splines import (
+    DEFAULT_MIN_OBS,
+    DEFAULT_N_KNOTS,
+    SPLINE_PREDICTOR_REFERENCE,
+    SplinePredictorConfig,
+    SplinePredictorResult,
+    fit_spline_predictor,
+)
 from hft_hmm.features.volatility_ratio import (
     VOLATILITY_RATIO_REFERENCE,
     VolatilityRatioConfig,
@@ -20,6 +28,12 @@ __all__ = [
     "INTRADAY_SEASONALITY_REFERENCE",
     "SeasonalityConfig",
     "intraday_seasonality",
+    "DEFAULT_MIN_OBS",
+    "DEFAULT_N_KNOTS",
+    "SPLINE_PREDICTOR_REFERENCE",
+    "SplinePredictorConfig",
+    "SplinePredictorResult",
+    "fit_spline_predictor",
     "VOLATILITY_RATIO_REFERENCE",
     "VolatilityRatioConfig",
     "ewma_volatility",
