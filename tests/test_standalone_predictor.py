@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,7 @@ from hft_hmm.experiments.standalone_predictor import (
     StandalonePredictorResult,
     StandalonePredictorWindow,
     StandaloneWalkForwardConfig,
+    run_standalone_experiment,
     standalone_predictor_backtest,
     standalone_run_id,
 )
@@ -139,6 +141,27 @@ def test_standalone_predictor_config_rejects_unknown_predictor() -> None:
         )
 
 
+def test_standalone_predictor_config_rejects_invalid_subconfigs() -> None:
+    with pytest.raises(TypeError, match="spline"):
+        StandalonePredictorConfig(
+            predictor="volatility_ratio",
+            walk_forward=StandaloneWalkForwardConfig(),
+            spline={"n_knots": 3},  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="vol_ratio"):
+        StandalonePredictorConfig(
+            predictor="volatility_ratio",
+            walk_forward=StandaloneWalkForwardConfig(),
+            vol_ratio={"fast_window": 10},  # type: ignore[arg-type]
+        )
+    with pytest.raises(TypeError, match="seasonality"):
+        StandalonePredictorConfig(
+            predictor="seasonality",
+            walk_forward=StandaloneWalkForwardConfig(),
+            seasonality={"bucket_minutes": 5},  # type: ignore[arg-type]
+        )
+
+
 # ---------------------------------------------------------------------------
 # Two-window walk-forward on synthetic fixture
 # ---------------------------------------------------------------------------
@@ -156,6 +179,22 @@ def test_vol_ratio_standalone_covers_two_windows() -> None:
         assert isinstance(w, StandalonePredictorWindow)
         assert w.n_forecast_obs >= 2
         assert isinstance(w.summary, pd.DataFrame)
+
+
+def test_backtest_rejects_non_config() -> None:
+    returns = _make_returns(n_days=10, bars_per_day=300, seed=0)
+    with pytest.raises(TypeError, match="StandalonePredictorConfig"):
+        standalone_predictor_backtest(returns, {"predictor": "volatility_ratio"})  # type: ignore[arg-type]
+
+
+def test_backtest_rejects_invalid_cost() -> None:
+    returns = _make_returns(n_days=10, bars_per_day=300, seed=0)
+    with pytest.raises(ValueError, match="cost_bps_per_turnover"):
+        standalone_predictor_backtest(
+            returns,
+            _vol_ratio_config(),
+            cost_bps_per_turnover=-1.0,
+        )
 
 
 def test_seasonality_standalone_covers_two_windows() -> None:
@@ -352,6 +391,35 @@ def test_standalone_experiment_config_yaml_round_trip(tmp_path: Path) -> None:
     assert loaded.vol_ratio.fast_window == cfg.vol_ratio.fast_window
     assert loaded.sha256 == cfg.sha256
     assert standalone_run_id(loaded) == standalone_run_id(cfg)
+
+
+def test_run_standalone_experiment_writes_expected_artifact_layout(tmp_path: Path) -> None:
+    from hft_hmm.config.experiment_config import DataSourceConfig
+
+    cfg = StandaloneExperimentConfig(
+        data=DataSourceConfig(kind="csv", path=str(FIXTURE_CSV)),
+        frequency="1min",
+        predictor="volatility_ratio",
+        walk_forward=StandaloneWalkForwardConfig(h_days=10, t_days=2, retrain_every_days=2),
+        spline=SplinePredictorConfig(n_knots=5, min_obs=20),
+        vol_ratio=VolatilityRatioConfig(fast_window=50, slow_window=100),
+        cost_bps_per_turnover=1.0,
+        notes="artifact-test",
+        sha256=FIXTURE_SHA256,
+    )
+
+    artifacts = run_standalone_experiment(cfg, runs_root=tmp_path)
+
+    assert artifacts.directory == tmp_path / artifacts.run_id
+    assert (artifacts.directory / "config.yaml").is_file()
+    assert (artifacts.directory / "metrics.json").is_file()
+    assert (artifacts.directory / "log.jsonl").is_file()
+    assert (artifacts.directory / "figures").is_dir()
+    metrics = json.loads((artifacts.directory / "metrics.json").read_text())
+    assert metrics["run_id"] == artifacts.run_id
+    assert metrics["predictor"] == "volatility_ratio"
+    assert metrics["reproducible"] is True
+    assert metrics["n_windows"] == len(artifacts.result.windows)
 
 
 def test_standalone_configs_are_loadable() -> None:

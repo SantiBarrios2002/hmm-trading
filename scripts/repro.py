@@ -11,8 +11,14 @@ import argparse
 import sys
 from pathlib import Path
 
+import yaml
+
 from hft_hmm.config import ExperimentConfig
 from hft_hmm.experiments.runner import run_experiment
+from hft_hmm.experiments.standalone_predictor import (
+    StandaloneExperimentConfig,
+    run_standalone_experiment,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,8 +43,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config not found: {args.config}", file=sys.stderr)
         return 2
 
-    config = ExperimentConfig.from_yaml(args.config)
-    artifacts = run_experiment(config, runs_root=args.runs_root, force=args.force)
+    raw = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        print(
+            f"Config must decode to a YAML mapping, got {type(raw).__name__}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if "predictor" in raw:
+        standalone_config = StandaloneExperimentConfig.from_dict(raw)
+        artifacts = run_standalone_experiment(
+            standalone_config, runs_root=args.runs_root, force=args.force
+        )
+    else:
+        config = ExperimentConfig.from_dict(raw)
+        artifacts = run_experiment(config, runs_root=args.runs_root, force=args.force)
     print(str(artifacts.directory))
     return 0
 

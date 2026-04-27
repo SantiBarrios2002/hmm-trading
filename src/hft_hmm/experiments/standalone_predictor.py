@@ -127,6 +127,20 @@ class StandalonePredictorConfig:
                 f"walk_forward must be a StandaloneWalkForwardConfig, "
                 f"got {type(self.walk_forward).__name__}."
             )
+        if not isinstance(self.spline, SplinePredictorConfig):
+            raise TypeError(
+                f"spline must be a SplinePredictorConfig, got {type(self.spline).__name__}."
+            )
+        if not isinstance(self.vol_ratio, VolatilityRatioConfig):
+            raise TypeError(
+                "vol_ratio must be a VolatilityRatioConfig, "
+                f"got {type(self.vol_ratio).__name__}."
+            )
+        if not isinstance(self.seasonality, SeasonalityConfig):
+            raise TypeError(
+                "seasonality must be a SeasonalityConfig, "
+                f"got {type(self.seasonality).__name__}."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +264,15 @@ def standalone_predictor_backtest(
 
     References: §4 side-information predictor standalone evaluation (evaluation layer)
     """
+    if not isinstance(config, StandalonePredictorConfig):
+        raise TypeError(
+            f"config must be a StandalonePredictorConfig, got {type(config).__name__}."
+        )
+    if not np.isfinite(cost_bps_per_turnover) or cost_bps_per_turnover < 0.0:
+        raise ValueError(
+            "cost_bps_per_turnover must be a finite non-negative float, "
+            f"got {cost_bps_per_turnover!r}."
+        )
     _validate_returns(returns)
 
     sorted_dates = np.array(sorted(set(returns.index.date)), dtype=object)
@@ -418,6 +441,20 @@ class StandaloneExperimentConfig:
             raise TypeError(
                 "walk_forward must be a StandaloneWalkForwardConfig, "
                 f"got {type(self.walk_forward).__name__}."
+            )
+        if not isinstance(self.spline, SplinePredictorConfig):
+            raise TypeError(
+                f"spline must be a SplinePredictorConfig, got {type(self.spline).__name__}."
+            )
+        if not isinstance(self.vol_ratio, VolatilityRatioConfig):
+            raise TypeError(
+                "vol_ratio must be a VolatilityRatioConfig, "
+                f"got {type(self.vol_ratio).__name__}."
+            )
+        if not isinstance(self.seasonality, SeasonalityConfig):
+            raise TypeError(
+                "seasonality must be a SeasonalityConfig, "
+                f"got {type(self.seasonality).__name__}."
             )
         cost = float(self.cost_bps_per_turnover)
         if not math.isfinite(cost) or cost < 0.0:
