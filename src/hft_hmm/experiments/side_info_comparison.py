@@ -66,6 +66,7 @@ from hft_hmm.experiments.walk_forward import (
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
 from hft_hmm.features.splines import SplinePredictorConfig, fit_spline_predictor
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_ratio
+from hft_hmm.inference import filter_from_result
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
@@ -618,11 +619,13 @@ def _run_side_info_variant(
             config=config.bucketed_transition,
         )
 
+        posterior_at_train_end = _terminal_training_posterior(train_slice, fitted)
         expected = _dynamic_forward_expected_returns(
             forecast_returns=effective_forecast.to_numpy(),
             forecast_features=feature_forecast.to_numpy(),
             fitted=fitted,
             bucketed=bucketed,
+            initial_state_distribution=posterior_at_train_end,
         )
         expected_series = pd.Series(expected, index=effective_forecast.index)
         window_signal = sign_signal(expected_series)
@@ -698,13 +701,17 @@ def _dynamic_forward_expected_returns(
     forecast_features: np.ndarray,
     fitted: GaussianHMMResult,
     bucketed: BucketedTransitionResult,
+    initial_state_distribution: np.ndarray,
 ) -> np.ndarray:
     """Run the side-info-conditioned forward filter and return E[r_{t+1}|info_t].
 
     Filtering uses ``A(x_{t-1})`` to advance the predictive distribution from
     ``t-1`` to ``t``; the one-step prediction at ``t`` then uses ``A(x_t)``,
     matching the IOHMM convention where the side-information observed at time
-    ``t`` parameterises the next transition.
+    ``t`` parameterises the next transition. ``initial_state_distribution`` is
+    the terminal filtering distribution from the training window, so each
+    forecast window carries training history instead of restarting from the
+    fitted unconditional initial distribution.
     """
     means = fitted.means
     variances = fitted.variances
@@ -722,6 +729,11 @@ def _dynamic_forward_expected_returns(
 
     n_obs = forecast_returns.shape[0]
     k = means.shape[0]
+    initial_distribution = _coerce_state_distribution(
+        initial_state_distribution,
+        k=k,
+        name="initial_state_distribution",
+    )
     centered = forecast_returns[:, None] - means[None, :]
     log_emissions = -0.5 * (
         np.log(2.0 * np.pi * variances[None, :]) + (centered * centered) / variances[None, :]
@@ -729,7 +741,7 @@ def _dynamic_forward_expected_returns(
 
     log_filtering = np.empty((n_obs, k), dtype=float)
     with np.errstate(divide="ignore"):
-        log_start = np.log(fitted.initial_distribution)
+        log_start = np.log(initial_distribution)
     log_alpha = log_start + log_emissions[0]
     log_filtering[0] = log_alpha - logsumexp(log_alpha)
 
@@ -747,6 +759,38 @@ def _dynamic_forward_expected_returns(
         next_matrix = bucketed.transition_matrix_for(float(forecast_features[t]))
         expected[t] = filtering[t] @ next_matrix @ means
     return expected
+
+
+def _terminal_training_posterior(
+    train_returns: pd.Series,
+    fitted: GaussianHMMResult,
+) -> np.ndarray:
+    """Return P(state at train_end | training returns) for a fitted HMM."""
+    filter_result = filter_from_result(fitted, train_returns)
+    k = fitted.means.shape[0]
+    return _coerce_state_distribution(
+        filter_result.filtering_probabilities[-1],
+        k=k,
+        name="posterior_at_train_end",
+    )
+
+
+def _coerce_state_distribution(
+    values: np.ndarray,
+    *,
+    k: int,
+    name: str,
+) -> np.ndarray:
+    distribution = np.asarray(values, dtype=float)
+    if distribution.shape != (k,):
+        raise ValueError(f"{name} must have shape ({k},), got {distribution.shape}.")
+    if not np.all(np.isfinite(distribution)):
+        raise ValueError(f"{name} must contain only finite values.")
+    if not np.all(distribution >= 0.0):
+        raise ValueError(f"{name} entries must be non-negative.")
+    if not np.isclose(distribution.sum(), 1.0):
+        raise ValueError(f"{name} must sum to 1.")
+    return distribution.copy()
 
 
 # ---------------------------------------------------------------------------
@@ -828,9 +872,10 @@ def _variant_payload(
     cmp_id: str,
     result: SideInfoVariantResult,
 ) -> dict[str, Any]:
+    aligned_returns = result.pre_cost_returns
     sample_window = {
-        "start": result.signal.index.min().isoformat(),
-        "end": result.signal.index.max().isoformat(),
+        "start": aligned_returns.index.min().isoformat(),
+        "end": aligned_returns.index.max().isoformat(),
     }
     return {
         "variant": variant,
@@ -838,7 +883,7 @@ def _variant_payload(
         "sample_window": sample_window,
         "chosen_k_per_window": [int(k) for k in result.chosen_k_per_window],
         "n_windows": len(result.windows),
-        "n_forecast_obs": int(result.signal.shape[0]),
+        "n_forecast_obs": int(aligned_returns.shape[0]),
         "cost_bps_per_turnover": float(result.cost_bps_per_turnover),
         "summary": _summary_to_payload(result.summary),
     }

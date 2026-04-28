@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from hft_hmm.config.experiment_config import DataSourceConfig
-from hft_hmm.core import EVALUATION_LAYER, module_category
+from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.experiments.side_info_comparison import (
     BASELINE_VARIANT,
     EXPECTED_VARIANTS,
@@ -26,7 +26,8 @@ from hft_hmm.experiments.walk_forward import WalkForwardConfig, walk_forward
 from hft_hmm.features.seasonality import SeasonalityConfig
 from hft_hmm.features.splines import SplinePredictorConfig
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig
-from hft_hmm.models.iohmm_approx import BucketedTransitionConfig
+from hft_hmm.models.gaussian_hmm import GaussianHMMResult
+from hft_hmm.models.iohmm_approx import BucketedTransitionConfig, BucketedTransitionResult
 
 side_info_module = importlib.import_module("hft_hmm.experiments.side_info_comparison")
 
@@ -200,6 +201,56 @@ def test_summary_includes_required_metric_fields(comparison_artifacts) -> None:
         assert isinstance(entry["chosen_k_per_window"], list)
         assert all(isinstance(k, int) and k >= 2 for k in entry["chosen_k_per_window"])
         assert "start" in entry["sample_window"] and "end" in entry["sample_window"]
+
+
+def test_summary_payload_uses_aligned_return_sample_window(comparison_artifacts) -> None:
+    payload = json.loads((comparison_artifacts.directory / "summary.json").read_text())
+    for variant in EXPECTED_VARIANTS:
+        result = comparison_artifacts.result.variants[variant]
+        entry = payload["variants"][variant]
+        assert entry["n_forecast_obs"] == len(result.pre_cost_returns)
+        assert entry["sample_window"] == {
+            "start": result.pre_cost_returns.index.min().isoformat(),
+            "end": result.pre_cost_returns.index.max().isoformat(),
+        }
+
+
+def test_dynamic_filter_uses_supplied_training_posterior_seed() -> None:
+    means = np.array([-1.0, 1.0])
+    fitted = GaussianHMMResult(
+        state_grid=StateGrid(k=2, means=means, labels=("down", "up")),
+        means=means,
+        variances=np.array([1.0, 1.0]),
+        transition_matrix=np.array([[0.9, 0.1], [0.1, 0.9]]),
+        initial_distribution=np.array([1.0, 0.0]),
+        log_likelihood=-1.0,
+        n_observations=3,
+        converged=True,
+        n_iter=1,
+        random_state=0,
+    )
+    bucketed = BucketedTransitionResult(
+        config=BucketedTransitionConfig(n_buckets=2, smoothing=1.0),
+        bucket_boundaries=np.array([0.0]),
+        transition_matrices=np.array(
+            [
+                [[0.9, 0.1], [0.1, 0.9]],
+                [[0.9, 0.1], [0.1, 0.9]],
+            ]
+        ),
+        baseline_transition_matrix=np.array([[0.9, 0.1], [0.1, 0.9]]),
+        bucket_observation_counts=np.array([1, 1]),
+    )
+
+    expected = side_info_module._dynamic_forward_expected_returns(
+        forecast_returns=np.array([0.0]),
+        forecast_features=np.array([1.0]),
+        fitted=fitted,
+        bucketed=bucketed,
+        initial_state_distribution=np.array([0.0, 1.0]),
+    )
+
+    assert expected[0] > 0.0
 
 
 # ---------------------------------------------------------------------------
