@@ -1,0 +1,41 @@
+bucketed_transition:
+  grid_size: 200
+  n_buckets: 3
+  smoothing: 1.0
+cost_bps_per_turnover: 1.0
+data:
+  end: null
+  kind: csv
+  path: tests/fixtures/es_1min_month.csv
+  start: null
+  symbol: null
+frequency: 1min
+notes: Gate H side-information comparison on January 2024 ES CSV fixture; baseline
+  vs volatility-ratio and intraday-seasonality IOHMM-style conditioning via the
+  Issue 16 bucketed transition approximation.
+seasonality:
+  bucket_minutes: 1
+  exchange_tz: America/Chicago
+  normalize: true
+sha256: c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34
+spline:
+  degree: 3
+  demean: false
+  demean_grid_size: 1000
+  min_obs: 20
+  n_knots: 5
+vol_ratio:
+  decay: 0.79
+  fast_window: 50
+  slow_window: 100
+walk_forward:
+  h_days: 10
+  k_values:
+  - 2
+  min_variance: 1.0e-08
+  n_iter: 100
+  random_state: 0
+  retrain_every_days: 2
+  t_days: 2
+  tol: 0.0001
+  variance_floor_policy: clamp
