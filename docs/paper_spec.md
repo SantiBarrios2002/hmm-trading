@@ -1,4 +1,4 @@
-# Paper Specification And Ambiguity Table
+# Paper Specification and Ambiguity Table
 
 This document is the review map for the repository's interpretation of
 Christensen, Turner, and Godsill, *Hidden Markov Models Applied To Intraday
