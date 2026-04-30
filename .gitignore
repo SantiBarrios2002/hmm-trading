@@ -48,6 +48,10 @@ data/*
 !data/README.md
 *.pdf
 docs/
+!docs/
+docs/*
+!docs/.gitkeep
+!docs/paper_spec.md
 
 # Experiment artifacts
 runs/
