@@ -265,6 +265,7 @@ A gate passes only when all listed conditions are satisfied.
 - A concise paper notes document exists.
 - A concise experiment log exists.
 - `docs/paper_spec.md` exists as a structured table with columns: **component**, **paper says** (with §/figure reference), **repo interpretation**, **deviation type** (paper-faithful / engineering approximation / evaluation-layer / excluded by §2.5), **acceptance risk**. This replaces any informal faithful-vs-approximate prose and is the single document a thesis committee reads to understand interpretive choices.
+  The current paper-fidelity map lives at [`docs/paper_spec.md`](docs/paper_spec.md).
 
 ### Evidence expected in PR review
 - generated figures stored under `docs/figures/` or equivalent

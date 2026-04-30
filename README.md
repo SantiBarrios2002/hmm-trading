@@ -38,6 +38,7 @@ The core single-asset HMM replication pipeline is implemented through the evalua
 - [`requirements-dev.txt`](requirements-dev.txt): wrapper for editable install with `.[dev]`
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md): development roadmap
 - [`GITHUB_ISSUES.md`](GITHUB_ISSUES.md): suggested issue and milestone breakdown
+- [`docs/paper_spec.md`](docs/paper_spec.md): paper-fidelity and ambiguity table
 - `src/hft_hmm/`: data, preprocessing, modeling, inference, strategy, evaluation, and experiment modules
 - `tests/`: unit and integration tests, plus tracked fixtures
 - `configs/`: reproducible experiment YAMLs
@@ -125,6 +126,7 @@ The implemented codebase currently covers:
 - walk-forward retraining experiments with reproducibility metadata and artifact logging
 
 The code is organized so modules declare whether they are paper-faithful, engineering approximations, or evaluation-layer utilities. This keeps the replication scope explicit where the repository deliberately departs from the paper.
+For a row-by-row defense of those choices, see [`docs/paper_spec.md`](docs/paper_spec.md).
 
 ## Data Note
 
