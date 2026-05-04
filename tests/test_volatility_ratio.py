@@ -179,6 +179,14 @@ def test_volatility_ratio_aligns_and_masks_slow_window_prefix() -> None:
     assert ratio.iloc[DEFAULT_SLOW_WINDOW:].notna().all()
 
 
+def test_volatility_ratio_sets_flat_zero_volatility_stretches_to_neutral() -> None:
+    returns = _series(np.zeros(DEFAULT_SLOW_WINDOW + 20))
+    ratio = volatility_ratio(returns)
+
+    assert ratio.iloc[:DEFAULT_SLOW_WINDOW].isna().all()
+    np.testing.assert_allclose(ratio.iloc[DEFAULT_SLOW_WINDOW:].to_numpy(), 1.0)
+
+
 def test_volatility_ratio_is_deterministic() -> None:
     rng = np.random.default_rng(123)
     returns = _series(rng.normal(scale=1e-3, size=300))

@@ -26,8 +26,11 @@ Algorithm
      :func:`~hft_hmm.selection.compare_state_counts` and its ``best_by_bic``
      choice; otherwise use the single candidate directly.
    - Run :func:`~hft_hmm.inference.forward_filter` on the forecast slice and
-     emit a sign-based signal via
-     :func:`~hft_hmm.strategy.signal_from_filter_result`.
+     emit a signal via :func:`~hft_hmm.strategy.build_signal`. The default
+     ``signal_policy="sign"`` reproduces the sign-based path; setting it to
+     ``"thresholded_hold"`` gates trades on ``|E[Δy_{t+1}]| > signal_threshold``
+     and holds the prior position inside the dead-zone (turnover-aware),
+     including across retraining windows.
    - When ``retrain_every_days < t_days``, truncate the effective contribution
      of the current forecast slice at the next retraining boundary so later
      models supersede overlapping future bars.
@@ -62,7 +65,12 @@ from hft_hmm.models.gaussian_hmm import (
     VarianceFloorPolicy,
 )
 from hft_hmm.selection import compare_state_counts
-from hft_hmm.strategy import align_signal_with_future_return, signal_from_filter_result
+from hft_hmm.strategy import (
+    SignalPolicy,
+    align_signal_with_future_return,
+    build_signal,
+)
+from hft_hmm.strategy.signals import _VALID_SIGNAL_POLICIES
 
 __category__: Final[str] = EVALUATION_LAYER
 WALK_FORWARD_REFERENCE: Final[PaperReference] = reference(
@@ -234,6 +242,8 @@ def walk_forward(
     config: WalkForwardConfig,
     *,
     cost_bps_per_turnover: float = 0.0,
+    signal_policy: SignalPolicy = "sign",
+    signal_threshold: float = 0.0,
 ) -> WalkForwardResult:
     """Run the paper's rolling-window retraining scheme on a return series.
 
@@ -257,6 +267,16 @@ def walk_forward(
     if not np.all(np.isfinite(np.asarray(returns, dtype=float))):
         raise ValueError("returns must contain only finite values; drop NaN/inf first.")
 
+    if signal_policy not in _VALID_SIGNAL_POLICIES:
+        raise ValueError(
+            f"signal_policy must be one of {_VALID_SIGNAL_POLICIES}, got {signal_policy!r}."
+        )
+    if not np.isfinite(signal_threshold) or signal_threshold < 0.0:
+        raise ValueError(
+            "signal_threshold must be a finite non-negative float, "
+            f"got {signal_threshold!r}."
+        )
+
     sorted_dates = np.array(sorted(set(returns.index.date)), dtype=object)
     n_dates = sorted_dates.size
     if n_dates < config.h_days + config.t_days:
@@ -278,6 +298,7 @@ def walk_forward(
     pre_cost_return_parts: list[pd.Series] = []
     post_cost_return_parts: list[pd.Series] = []
     bar_dates = returns.index.date
+    initial_position = 0
 
     for window_index, day_offset in enumerate(range(0, max_window_start + 1, retrain_every_days)):
         train_start_date = sorted_dates[day_offset]
@@ -325,11 +346,16 @@ def walk_forward(
         fitted = wrapper.fit(train_slice)
 
         filter_result = forward_filter(effective_forecast_slice, fitted)
-        window_signal = signal_from_filter_result(
-            filter_result,
-            threshold=0.0,
-            index=effective_forecast_slice.index,
+        window_signal = build_signal(
+            pd.Series(
+                filter_result.expected_next_returns,
+                index=effective_forecast_slice.index,
+            ),
+            policy=signal_policy,
+            threshold=signal_threshold,
+            initial_position=initial_position,
         )
+        initial_position = int(window_signal.iloc[-1])
         window_pre_cost_returns = align_signal_with_future_return(
             window_signal, effective_forecast_slice
         )

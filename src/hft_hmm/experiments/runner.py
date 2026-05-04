@@ -78,6 +78,8 @@ def run_experiment(
         returns,
         config.walk_forward,
         cost_bps_per_turnover=config.cost_bps_per_turnover,
+        signal_policy=config.signal_policy,
+        signal_threshold=config.signal_threshold,
     )
 
     runs_root_path.mkdir(parents=True, exist_ok=True)

@@ -15,6 +15,7 @@ from hft_hmm.strategy import (
     align_signal_with_future_return,
     sign_signal,
     signal_from_filter_result,
+    thresholded_hold_signal,
     thresholded_signal,
 )
 
@@ -109,6 +110,30 @@ def test_thresholded_signal_rejects_negative_or_non_finite_threshold() -> None:
         thresholded_signal(values, threshold=float("inf"))
     with pytest.raises(ValueError, match="finite"):
         thresholded_signal(values, threshold=float("nan"))
+
+
+def test_thresholded_hold_signal_keeps_previous_position_inside_dead_zone() -> None:
+    values = np.array([0.0, 0.04, 0.01, -0.01, -0.05, 0.0, 0.08], dtype=float)
+
+    signal = thresholded_hold_signal(values, threshold=0.02)
+
+    np.testing.assert_array_equal(signal.to_numpy(), np.array([0, 1, 1, 1, -1, -1, 1]))
+
+
+def test_thresholded_hold_signal_accepts_initial_position() -> None:
+    values = np.array([0.0, 0.01, -0.03], dtype=float)
+
+    signal = thresholded_hold_signal(values, threshold=0.02, initial_position=1)
+
+    np.testing.assert_array_equal(signal.to_numpy(), np.array([1, 1, -1]))
+
+
+def test_thresholded_hold_signal_rejects_invalid_parameters() -> None:
+    values = np.array([0.01, -0.02, 0.03], dtype=float)
+    with pytest.raises(ValueError, match="non-negative"):
+        thresholded_hold_signal(values, threshold=-0.01)
+    with pytest.raises(ValueError, match="initial_position"):
+        thresholded_hold_signal(values, threshold=0.01, initial_position=2)
 
 
 def test_align_signal_with_future_return_uses_previous_signal() -> None:
