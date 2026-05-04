@@ -195,6 +195,8 @@ def test_force_overwrites_existing_directory(tmp_path: Path) -> None:
 def test_summary_includes_required_metric_fields(comparison_artifacts) -> None:
     payload = json.loads((comparison_artifacts.directory / "summary.json").read_text())
     assert payload["comparison_id"] == comparison_artifacts.comparison_id
+    assert "primary academic" in payload["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in payload["metric_interpretation"]["post-cost"]
     for variant in EXPECTED_VARIANTS:
         entry = payload["variants"][variant]
         assert entry["variant"] == variant

@@ -21,22 +21,43 @@ Both share the Databento ES 1-minute parquet, walk-forward schedule
 and
 [`configs/example_es_databento_side_info_comparison_thresholded.yaml`](../configs/example_es_databento_side_info_comparison_thresholded.yaml).
 
-## Comparison Table
+## Pre-Cost Academic Comparison
 
-Sharpe columns use the paper's §4.4 convention: sum intraday strategy returns
-by UTC date, compute Sharpe on the daily return vector, then annualize by
-`sqrt(258)`. Sample window is 2019-01-28 00:01 UTC to 2024-12-25 23:59 UTC for
-every row.
+This is the headline table for the academic comparison. Sharpe uses the
+paper's §4.4 convention: sum intraday strategy returns by UTC date, compute
+Sharpe on the daily return vector, then annualize by `sqrt(258)`. Sample window
+is 2019-01-28 00:01 UTC to 2024-12-25 23:59 UTC for every row.
 
-| Model | Signal policy | Pre-cost Sharpe | Post-cost Sharpe | Hit rate | Cumulative return | Paper reference | Repo `run_id` |
-|---|---|---:|---:|---:|---:|---|---|
-| Baseline HMM | sign | 0.5298 | -8.8973 | 0.4079 | 0.9378 | §3 baseline HMM; §4.4 comparison context | `04269749abff` |
-| Volatility-ratio IOHMM | sign | 0.7577 | -7.4351 | 0.4080 | 1.6061 | §4.2 Predictor I; §4.4 IOHMM comparison | `04269749abff` |
-| Seasonality IOHMM | sign | 0.6285 | -7.6906 | 0.4080 | 1.2191 | §4.2 Predictor II; §4.4 IOHMM comparison | `04269749abff` |
-| Baseline HMM | thresholded_hold (1.7e-6) | 0.2264 | -2.3563 | 0.4073 | 0.3396 | §3 baseline HMM, turnover-aware variant | `f7af264b0da4` |
-| Volatility-ratio IOHMM | thresholded_hold (1.7e-6) | 0.2819 | -2.0129 | 0.4074 | 0.4385 | §4.2 Predictor I, turnover-aware variant | `f7af264b0da4` |
-| Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | -2.1692 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
-| Long-only benchmark | n/a | 0.6410 | 0.6410 | 0.4091 | 1.3064 | Evaluation benchmark, not a paper model | `04269749abff` |
+Post-cost results are intentionally excluded from this table because the paper
+does not specify enough execution-cost detail for a clean reproduction target.
+
+| Model | Signal policy | Pre-cost Sharpe | Hit rate | Pre-cost cumulative return | Paper reference | Repo `run_id` |
+|---|---|---:|---:|---:|---|---|
+| Baseline HMM | sign | 0.5298 | 0.4079 | 0.9378 | §3 baseline HMM; §4.4 comparison context | `04269749abff` |
+| Volatility-ratio IOHMM | sign | 0.7577 | 0.4080 | 1.6061 | §4.2 Predictor I; §4.4 IOHMM comparison | `04269749abff` |
+| Seasonality IOHMM | sign | 0.6285 | 0.4080 | 1.2191 | §4.2 Predictor II; §4.4 IOHMM comparison | `04269749abff` |
+| Baseline HMM | thresholded_hold (1.7e-6) | 0.2264 | 0.4073 | 0.3396 | §3 baseline HMM, turnover-aware variant | `f7af264b0da4` |
+| Volatility-ratio IOHMM | thresholded_hold (1.7e-6) | 0.2819 | 0.4074 | 0.4385 | §4.2 Predictor I, turnover-aware variant | `f7af264b0da4` |
+| Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
+| Long-only benchmark | n/a | 0.6410 | 0.4091 | 1.3064 | Evaluation benchmark, not a paper model | `04269749abff` |
+
+## Post-Cost Diagnostic
+
+This table is a cost-sensitivity stress test under the repo's fixed
+`1.0` basis-point-per-turnover convention. It is deliberately isolated from
+the paper comparison above. The numbers answer a different question: whether
+the minute-level signal survives this explicit, conservative execution-cost
+assumption.
+
+| Model | Signal policy | Post-cost Sharpe | Post-cost cumulative return | Total turnover | Cost drag in cumulative return | Repo `run_id` |
+|---|---|---:|---:|---:|---:|---|
+| Baseline HMM | sign | -8.8973 | -1.0000 | 164,088 | 1.9378 | `04269749abff` |
+| Volatility-ratio IOHMM | sign | -7.4351 | -1.0000 | 138,020 | 2.6061 | `04269749abff` |
+| Seasonality IOHMM | sign | -7.6906 | -1.0000 | 134,940 | 2.2191 | `04269749abff` |
+| Baseline HMM | thresholded_hold (1.7e-6) | -2.3563 | -0.9626 | 35,844 | 1.3023 | `f7af264b0da4` |
+| Volatility-ratio IOHMM | thresholded_hold (1.7e-6) | -2.0129 | -0.9370 | 31,324 | 1.3756 | `f7af264b0da4` |
+| Seasonality IOHMM | thresholded_hold (1.7e-6) | -2.1692 | -0.9490 | 31,512 | 1.1352 | `f7af264b0da4` |
+| Long-only benchmark | n/a | 0.6410 | 1.3064 | 0 | 0.0000 | `04269749abff` |
 
 The comparison figure is
 [`docs/figures/cumulative_return_vs_paper.png`](figures/cumulative_return_vs_paper.png),
@@ -65,11 +86,12 @@ it under thresholded_hold, where the dead-zone discards a larger share of the
 seasonal signal than of the volatility one.
 
 The side-information variants do not dominate the long-only benchmark on every
-metric: under the sign policy, volatility-ratio beats long-only on pre-cost
-Sharpe (`0.7577` vs `0.6410`) and cumulative return (`1.6061` vs `1.3064`);
-under the thresholded_hold policy, no trading variant beats long-only on either
-metric. Long-only also dominates every trading variant on post-cost Sharpe
-because the benchmark has zero turnover.
+pre-cost metric: under the sign policy, volatility-ratio beats long-only on
+pre-cost Sharpe (`0.7577` vs `0.6410`) and cumulative return (`1.6061` vs
+`1.3064`); under the thresholded_hold policy, no trading variant beats
+long-only. The post-cost diagnostic is intentionally not used to rank paper
+replication quality because it is dominated by the repo's turnover-cost
+assumption.
 
 ## Cost Convention
 
@@ -81,7 +103,10 @@ than tune an undocumented cost number until the post-cost gap resembles the
 paper, the repo keeps a simple fixed convention that is easy to audit:
 flat-to-long costs 1 bp and long-to-short costs 2 bp. This makes post-cost
 results a conservative stress test and keeps the headline paper comparison on
-the pre-cost daily Sharpe, where the paper gives the most usable target.
+the pre-cost daily Sharpe, where the paper gives the most usable target. A
+negative post-cost result under this convention means "the minute-level signal
+is too expensive under this assumed cost"; it does not erase the pre-cost
+evidence that the model contains directional information.
 
 ## Threshold Calibration
 
@@ -115,10 +140,11 @@ about a half to two-thirds because most of the directional information sits in
 small-magnitude expected-return predictions that fall inside the dead-zone.
 Post-cost Sharpe improves by a factor of roughly 3 to 4 versus the sign policy
 but stays negative on this sample under the simple
-one-basis-point-per-turnover cost model. The paper does not specify a
-transaction-cost model beyond saying post-cost Sharpe falls by roughly 15%, so
-the post-cost shortfall is consistent with a more punitive cost assumption
-applied at the minute-bar signal level.
+one-basis-point-per-turnover cost model. This is why the post-cost table is
+presented as a separate diagnostic. The paper does not specify a transaction
+cost model beyond saying post-cost Sharpe falls by roughly 15%, so using the
+post-cost shortfall as a paper-replication failure would be over-interpreting an
+underspecified execution assumption.
 
 The main gaps are:
 

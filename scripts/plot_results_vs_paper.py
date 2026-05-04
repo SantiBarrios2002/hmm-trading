@@ -2,8 +2,8 @@
 
 Reads ``runs/<run_id>/summary.json`` for the sign-policy and thresholded_hold
 passes and writes ``docs/figures/cumulative_return_vs_paper.png``: a grouped
-bar chart of pre-cost and post-cost cumulative returns per variant, faceted
-by signal policy.
+bar chart of pre-cost cumulative returns and separately labelled post-cost
+diagnostics per variant, faceted by signal policy.
 
 Usage:
     python scripts/plot_results_vs_paper.py <sign_run_id> <thresholded_run_id>
@@ -86,13 +86,14 @@ def main(argv: list[str] | None = None) -> int:
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=15)
     ax.set_ylabel("cumulative return")
-    ax.set_title("Cumulative returns on local Databento ES data: sign vs thresholded_hold")
+    ax.set_title("Pre-cost comparison plus separate post-cost diagnostic")
     ax.legend(loc="best", frameon=False)
     fig.text(
         0.5,
         0.01,
         f"Runs {args.sign_run_id} (sign) and {args.thresholded_run_id} (thresholded_hold). "
-        "Databento ES 1min, 2019-2024. Paper §4.4 Sharpe is discussed in docs/results_vs_paper.md.",
+        "Databento ES 1min, 2019-2024. Post-cost bars use the repo's 1 bp turnover "
+        "stress test, not a paper-calibrated execution model.",
         ha="center",
         fontsize=8,
     )

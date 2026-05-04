@@ -2,7 +2,7 @@
 
 Runs three walk-forward variants on the same return series with the same
 window geometry, K selection, cost model, and reporting units, so the
-variants are directly comparable:
+variants are directly comparable on pre-cost signal quality:
 
 1. ``baseline`` — Gaussian HMM walk-forward (delegates to
    :func:`hft_hmm.experiments.walk_forward.walk_forward` so the summary
@@ -18,6 +18,11 @@ The IOHMM-style conditioning is the engineering approximation from
 side-information value, and a separate K × K transition matrix is fitted per
 bucket on the training slice, with the per-window MLE matrix as the smoothing
 prior.
+
+Pre-cost Sharpe is the primary paper-comparison metric. Post-cost results are
+reported separately as turnover-cost diagnostics under the repo's fixed linear
+cost convention; they are not calibrated to the paper's unspecified execution
+model.
 
 References: §4 side-information / IOHMM evaluation (evaluation layer)
 """
@@ -890,6 +895,17 @@ def _write_summary(
         "reproducible": reproducible,
         "frequency": config.frequency,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
+        "metric_interpretation": {
+            "pre-cost": (
+                "primary academic signal-quality metric for paper comparison; "
+                "no execution costs applied"
+            ),
+            "post-cost": (
+                "cost-sensitivity diagnostic under the repo's linear turnover "
+                "cost convention; not calibrated to the paper's unspecified "
+                "execution model"
+            ),
+        },
         "variants": {
             name: _variant_payload(name, cmp_id, result.variants[name])
             for name in EXPECTED_VARIANTS

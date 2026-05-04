@@ -19,13 +19,14 @@ Conventions
 
 Evaluation modes
 ----------------
-- **no-cost**: aggregate metrics are computed on ``signal[t-1] * returns[t]``
-  with no adjustment.
-- **cost-aware**: a turnover cost ``c`` (basis points per position change)
-  is subtracted when computing post-cost metrics. The cost model itself
-  lives in the Gate E metrics module (Issue 10); this module only emits
-  signals and does not apply costs, so its output is identical in both
-  modes.
+- **pre-cost**: aggregate metrics are computed on
+  ``signal[t-1] * returns[t]`` with no execution-cost adjustment. This is the
+  primary academic signal-quality mode used for paper comparison.
+- **post-cost diagnostic**: a turnover cost ``c`` (basis points per position
+  change) is subtracted after signal alignment. The cost model itself lives in
+  the Gate E metrics module (Issue 10); this module only emits signals and does
+  not apply costs. Post-cost results are useful stress tests, but are not a
+  paper-matching target because the paper leaves execution costs unspecified.
 
 References: §8 sign-based trading signal (evaluation layer)
 """

@@ -2,6 +2,10 @@
   "comparison_id": "f7af264b0da4",
   "cost_bps_per_turnover": 1.0,
   "frequency": "1min",
+  "metric_interpretation": {
+    "post-cost": "cost-sensitivity diagnostic under the repo's linear turnover cost convention; not calibrated to the paper's unspecified execution model",
+    "pre-cost": "primary academic signal-quality metric for paper comparison; no execution costs applied"
+  },
   "reproducible": true,
   "variants": {
     "baseline": {

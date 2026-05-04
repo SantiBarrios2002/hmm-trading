@@ -13,6 +13,26 @@ This repository is a course project implementation inspired by:
 
 The intent is a clean, reviewable, academically defensible replication pipeline, not a production trading system and not a claim of exact numerical reproduction of the paper.
 
+## How To Read Performance Metrics
+
+The project separates model-quality metrics from execution-cost diagnostics:
+
+- **Pre-cost results are the main academic comparison.** They measure whether
+  the HMM signal has predictive information before trading-cost assumptions are
+  imposed. This is the cleanest comparison to the paper because the paper
+  emphasizes pre-cost Sharpe and does not fully specify its execution model.
+- **Post-cost results are diagnostic stress tests.** They subtract the repo's
+  simple `cost_bps_per_turnover` convention after signal alignment. The default
+  `1.0` basis point per unit turnover is deliberately transparent and
+  conservative at 1-minute cadence; it is not tuned to match the paper.
+- **Large pre/post gaps usually mean high turnover, not necessarily no signal.**
+  For the results-vs-paper branch, the sign policy has the best pre-cost
+  Sharpe, while `thresholded_hold` is reported separately to show how much
+  turnover filtering helps under the conservative cost convention.
+
+See [`docs/results_vs_paper.md`](docs/results_vs_paper.md) for the isolated
+pre-cost comparison and the separate post-cost diagnostic table.
+
 ## Current Status
 
 The repository currently contains:
@@ -22,13 +42,14 @@ The repository currently contains:
 - model-selection helpers (AIC/BIC) and log-space forward filtering
 - sign-based signal generation plus backtest metrics with turnover-cost accounting
 - a walk-forward experiment runner with deterministic YAML configs, run hashing, and saved artifacts
+- results-vs-paper artifacts that keep the pre-cost academic comparison separate from post-cost cost-sensitivity diagnostics
 - tracked ES 1-minute CSV fixtures for integration tests and reproducibility checks
 - repository automation for tests, linting, formatting, and typing
 
-The core single-asset HMM replication pipeline is implemented through the evaluation layer. The main remaining scope is:
-- side-information features such as volatility ratio and intraday seasonality
-- spline-based predictor fitting and IOHMM-style transition conditioning approximations
-- figure-generation and presentation-oriented project artifacts
+The core single-asset HMM replication pipeline is implemented through the
+evaluation layer, including side-information features, spline-based predictor
+fitting, IOHMM-style transition conditioning approximations, and
+presentation-oriented results artifacts.
 
 ## Repository Contents
 

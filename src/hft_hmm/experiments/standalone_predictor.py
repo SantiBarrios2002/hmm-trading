@@ -5,10 +5,12 @@ evaluated in isolation before being folded into the IOHMM (Issue 16). The
 signal is sign(f(x_t)) where f(·) is a cubic spline fitted on the training
 window only. No HMM state is used.
 
-The walk-forward geometry, cost model, and metric definitions mirror the
-baseline HMM walk-forward (§2.3) so the results are directly comparable.
-This mirrors the paper's §4 structure: each predictor is evaluated standalone
-before being incorporated into the IOHMM.
+The walk-forward geometry and metric definitions mirror the baseline HMM
+walk-forward (§2.3) so pre-cost signal-quality results are directly
+comparable. Post-cost outputs use the repo's explicit turnover-cost convention
+as diagnostics only; they are not calibrated to the paper's unspecified
+execution assumptions. This mirrors the paper's §4 structure: each predictor is
+evaluated standalone before being incorporated into the IOHMM.
 
 Classification: evaluation layer.
 References: §4 side-information predictors (evaluation layer)
@@ -783,6 +785,17 @@ def _write_metrics(
         "reproducible": reproducible,
         "predictor": config.predictor,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
+        "metric_interpretation": {
+            "pre-cost": (
+                "primary academic signal-quality metric for paper comparison; "
+                "no execution costs applied"
+            ),
+            "post-cost": (
+                "cost-sensitivity diagnostic under the repo's linear turnover "
+                "cost convention; not calibrated to the paper's unspecified "
+                "execution model"
+            ),
+        },
         "n_windows": len(result.windows),
         "n_forecast_obs": int(result.signal.shape[0]),
         "summary": _summary_to_payload(result.summary),

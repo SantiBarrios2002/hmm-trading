@@ -249,8 +249,9 @@ def walk_forward(
 
     The input ``returns`` must be a ``pd.Series`` with a tz-aware monotonic
     ``DatetimeIndex`` so that calendar-date grouping is unambiguous. The
-    ``cost_bps_per_turnover`` parameter only affects evaluation-layer metrics;
-    it does not change the signal path itself.
+    ``cost_bps_per_turnover`` parameter only affects post-cost diagnostic
+    metrics; it does not change the signal path itself or the pre-cost paper
+    comparison.
 
     References: §2.3 rolling-window overnight retraining scheme (evaluation layer)
     """

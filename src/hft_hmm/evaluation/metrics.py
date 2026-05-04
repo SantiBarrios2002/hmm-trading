@@ -16,6 +16,16 @@ Cost model
 - Under this convention, a flat-to-long rebalance costs ``c`` basis points and
   a long-to-short flip costs ``2c`` basis points.
 
+Interpretation
+--------------
+- Pre-cost metrics are the primary academic signal-quality metrics for the
+  paper comparison: they ask whether the model's predicted direction contains
+  useful information before execution assumptions are imposed.
+- Post-cost metrics are cost-sensitivity diagnostics under this repo's simple
+  linear turnover convention. They are not calibrated to the paper because the
+  paper does not specify spread, slippage, fee, per-side/round-trip, or fill
+  assumptions.
+
 Sharpe ratio is reported as sample mean divided by sample standard deviation.
 For fewer than two observations, or for zero sample variance, the function
 returns ``0.0`` as a stable evaluation-layer fallback.
@@ -71,7 +81,11 @@ def apply_turnover_cost(
     *,
     cost_bps_per_turnover: float,
 ) -> pd.Series:
-    """Subtract linear turnover costs from aligned strategy returns."""
+    """Subtract linear turnover costs from aligned strategy returns.
+
+    This is a transparent cost-sensitivity diagnostic, not a reproduction of
+    the paper's unspecified execution model.
+    """
     if not isinstance(strategy_returns, pd.Series):
         raise TypeError(
             "strategy_returns must be a pd.Series, " f"got {type(strategy_returns).__name__}."
@@ -247,7 +261,7 @@ def summarize_backtest(
     *,
     cost_bps_per_turnover: float = 0.0,
 ) -> pd.DataFrame:
-    """Return a compact pre-cost and post-cost summary table."""
+    """Return a compact pre-cost summary plus post-cost diagnostic table."""
     pre_cost_returns = align_signal_with_future_return(signal, realized_returns)
     turnover = signal_turnover(signal)
     post_cost_returns = apply_turnover_cost(

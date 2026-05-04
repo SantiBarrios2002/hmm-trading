@@ -331,6 +331,8 @@ def test_repro_cli_runs_example_config_end_to_end(tmp_path: Path) -> None:
     metrics = json.loads((printed / "metrics.json").read_text())
     assert metrics["reproducible"] is True
     assert metrics["n_windows"] >= 1
+    assert "primary academic" in metrics["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in metrics["metric_interpretation"]["post-cost"]
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
 
 
@@ -360,6 +362,8 @@ def test_repro_cli_runs_standalone_predictor_config_end_to_end(tmp_path: Path) -
     assert metrics["predictor"] == "volatility_ratio"
     assert metrics["reproducible"] is True
     assert metrics["n_windows"] >= 1
+    assert "primary academic" in metrics["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in metrics["metric_interpretation"]["post-cost"]
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
 
 

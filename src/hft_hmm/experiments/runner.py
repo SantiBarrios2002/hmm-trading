@@ -151,6 +151,17 @@ def _write_metrics(
         "run_id": experiment_id,
         "reproducible": reproducible,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
+        "metric_interpretation": {
+            "pre-cost": (
+                "primary academic signal-quality metric for paper comparison; "
+                "no execution costs applied"
+            ),
+            "post-cost": (
+                "cost-sensitivity diagnostic under the repo's linear turnover "
+                "cost convention; not calibrated to the paper's unspecified "
+                "execution model"
+            ),
+        },
         "n_windows": len(result.windows),
         "n_forecast_obs": int(result.signal.shape[0]),
         "summary": _summary_to_payload(result.summary),
