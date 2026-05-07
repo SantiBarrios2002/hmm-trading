@@ -395,6 +395,20 @@ def test_walk_forward_window_summaries_match_per_window_backtests() -> None:
         pd.testing.assert_frame_equal(window.summary, expected_summary)
 
 
+def test_walk_forward_conviction_weighted_returns_continuous_positions() -> None:
+    returns = _regime_switching_returns(n_days=10, bars_per_day=20, seed=17)
+    config = WalkForwardConfig(h_days=5, t_days=2, k_values=(2,), random_state=0)
+
+    result = walk_forward(returns, config, signal_policy="conviction_weighted")
+
+    assert result.signal.dtype == float
+    values = result.signal.to_numpy()
+    assert np.all(values >= -1.0) and np.all(values <= 1.0)
+    assert np.any((np.abs(values) > 0.0) & (np.abs(values) < 1.0)), (
+        "conviction-weighted signal should produce some intermediate-magnitude positions"
+    )
+
+
 def test_walk_forward_deterministic_with_fixed_seed() -> None:
     returns = _regime_switching_returns(n_days=10, bars_per_day=20, seed=42)
     config = WalkForwardConfig(h_days=5, t_days=2, k_values=(2,), random_state=0)

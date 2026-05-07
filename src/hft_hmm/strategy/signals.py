@@ -17,6 +17,21 @@ Conventions
   into ``sign_signal`` is consistent with the convention above; no ``shift``
   is required.
 
+Signal policies
+---------------
+- ``sign`` — discrete ±1/0 positions following ``np.sign(E[Δy_{t+1}])``.
+  This is the paper's policy and the primary path for the academic comparison.
+- ``thresholded_hold`` — sign-with-deadzone variant that keeps the previous
+  position inside ``|E[Δy_{t+1}]| <= threshold``. Used as a turnover-aware
+  diagnostic against the conservative cost convention; **not** a paper-matching
+  policy.
+- ``conviction_weighted`` — engineering extension. Continuous position in
+  ``[-1, +1]`` proportional to ``E[Δy_{t+1}]`` standardized by a per-window
+  scale (typically the std of training-side predicted expected returns).
+  Small-magnitude predictions still trade, just with smaller positions. Labeled
+  evaluation-layer rather than paper-faithful because the paper specifies a
+  ±1 sign rule.
+
 Evaluation modes
 ----------------
 - **pre-cost**: aggregate metrics are computed on
@@ -46,8 +61,13 @@ SIGNAL_REFERENCE: Final[PaperReference] = reference(
     "§8", "sign-based trading signal from expected return"
 )
 
-SignalPolicy = Literal["sign", "thresholded_hold"]
-_VALID_SIGNAL_POLICIES: Final[tuple[str, ...]] = ("sign", "thresholded_hold")
+SignalPolicy = Literal["sign", "thresholded_hold", "conviction_weighted"]
+_VALID_SIGNAL_POLICIES: Final[tuple[str, ...]] = (
+    "sign",
+    "thresholded_hold",
+    "conviction_weighted",
+)
+_DISCRETE_SIGNAL_POLICIES: Final[tuple[str, ...]] = ("sign", "thresholded_hold")
 
 
 def sign_signal(expected_next_returns: pd.Series | np.ndarray) -> pd.Series:
@@ -121,19 +141,55 @@ def thresholded_hold_signal(
     return pd.Series(signal, index=index, name="signal")
 
 
+def conviction_weighted_signal(
+    expected_next_returns: pd.Series | np.ndarray,
+    *,
+    scale: float,
+    clip: float = 1.0,
+) -> pd.Series:
+    """Continuous-position policy: ``position[t] = clip(E[Δy_{t+1}] / scale, -clip, +clip)``.
+
+    Unlike ``sign_signal`` and ``thresholded_hold_signal``, the output is a
+    float position in ``[-clip, +clip]`` rather than a discrete ``{-1, 0, +1}``
+    integer. Larger ``|E[Δy_{t+1}]|`` means a larger position; small predictions
+    get small (but non-zero) positions instead of being discarded by a dead
+    zone.
+
+    ``scale`` must be a strictly positive float in the same units as the
+    expected returns (log-return per bar). The walk-forward driver computes it
+    per window from training-side predictions to keep the signal path
+    leakage-free, then passes it here.
+
+    References: §8 sign-based trading signal (evaluation layer)
+    """
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"scale must be a finite strictly positive float, got {scale!r}.")
+    if not np.isfinite(clip) or clip <= 0.0:
+        raise ValueError(f"clip must be a finite strictly positive float, got {clip!r}.")
+    values, index = _coerce_expected_returns(expected_next_returns)
+    positions = np.clip(values / scale, -clip, clip).astype(float)
+    return pd.Series(positions, index=index, name="signal")
+
+
 def build_signal(
     expected_next_returns: pd.Series | np.ndarray,
     *,
     policy: SignalPolicy,
     threshold: float = 0.0,
     initial_position: int = 0,
+    scale: float | None = None,
+    clip: float = 1.0,
 ) -> pd.Series:
     """Dispatch helper that turns expected returns into a signal under ``policy``.
 
-    ``policy="sign"`` ignores ``threshold`` and reproduces :func:`sign_signal`.
-    ``policy="thresholded_hold"`` calls :func:`thresholded_hold_signal`, which
-    holds the previous position inside the dead-zone — the turnover-aware
-    variant used for cost-sensitivity sweeps.
+    ``policy="sign"`` ignores every other parameter and reproduces
+    :func:`sign_signal`. ``policy="thresholded_hold"`` calls
+    :func:`thresholded_hold_signal`, which holds the previous position inside
+    the dead-zone — the turnover-aware variant used for cost-sensitivity
+    sweeps. ``policy="conviction_weighted"`` calls
+    :func:`conviction_weighted_signal` and requires ``scale`` to be supplied
+    (the per-window standardizer computed by the walk-forward driver from
+    training-only predictions).
 
     References: §8 sign-based trading signal (evaluation layer)
     """
@@ -143,11 +199,18 @@ def build_signal(
         )
     if policy == "sign":
         return sign_signal(expected_next_returns)
-    return thresholded_hold_signal(
-        expected_next_returns,
-        threshold=threshold,
-        initial_position=initial_position,
-    )
+    if policy == "thresholded_hold":
+        return thresholded_hold_signal(
+            expected_next_returns,
+            threshold=threshold,
+            initial_position=initial_position,
+        )
+    if scale is None:
+        raise ValueError(
+            "policy='conviction_weighted' requires the per-window scale to be supplied; "
+            "the walk-forward driver computes it from training-side predicted returns."
+        )
+    return conviction_weighted_signal(expected_next_returns, scale=scale, clip=clip)
 
 
 def signal_from_filter_result(

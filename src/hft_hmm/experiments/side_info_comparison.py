@@ -68,12 +68,13 @@ from hft_hmm.experiments.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
     WalkForwardWindow,
+    _conviction_scale_from_train_predictions,
     walk_forward,
 )
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
 from hft_hmm.features.splines import SplinePredictorConfig, fit_spline_predictor
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_ratio
-from hft_hmm.inference import filter_from_result
+from hft_hmm.inference import filter_from_result, forward_filter
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
@@ -86,7 +87,10 @@ from hft_hmm.strategy import (
     align_signal_with_future_return,
     build_signal,
 )
-from hft_hmm.strategy.signals import _VALID_SIGNAL_POLICIES
+from hft_hmm.strategy.signals import (
+    _DISCRETE_SIGNAL_POLICIES,
+    _VALID_SIGNAL_POLICIES,
+)
 
 __category__: Final[str] = EVALUATION_LAYER
 SIDE_INFO_COMPARISON_REFERENCE: Final[PaperReference] = reference(
@@ -661,13 +665,23 @@ def _run_side_info_variant(
             initial_state_distribution=posterior_at_train_end,
         )
         expected_series = pd.Series(expected, index=effective_forecast.index)
+
+        signal_scale: float | None = None
+        if config.signal_policy == "conviction_weighted":
+            train_filter = forward_filter(train_slice, fitted)
+            signal_scale = _conviction_scale_from_train_predictions(
+                train_filter.expected_next_returns
+            )
+
         window_signal = build_signal(
             expected_series,
             policy=config.signal_policy,
             threshold=config.signal_threshold,
             initial_position=initial_position,
+            scale=signal_scale,
         )
-        initial_position = int(window_signal.iloc[-1])
+        if config.signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
         window_pre_cost = align_signal_with_future_return(window_signal, effective_forecast)
         window_post_cost = apply_turnover_cost(
             window_pre_cost,
@@ -697,7 +711,9 @@ def _run_side_info_variant(
             )
         )
 
-    combined_signal = pd.concat(signal_parts).astype(np.int8)
+    combined_signal = pd.concat(signal_parts)
+    if config.signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
     combined_signal.name = "signal"
     pre_cost_returns = pd.concat(pre_cost_parts)
     post_cost_returns = pd.concat(post_cost_parts)

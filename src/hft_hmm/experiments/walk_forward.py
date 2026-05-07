@@ -30,7 +30,11 @@ Algorithm
      ``signal_policy="sign"`` reproduces the sign-based path; setting it to
      ``"thresholded_hold"`` gates trades on ``|E[Δy_{t+1}]| > signal_threshold``
      and holds the prior position inside the dead-zone (turnover-aware),
-     including across retraining windows.
+     including across retraining windows. ``"conviction_weighted"`` returns a
+     continuous position in ``[-1, +1]`` proportional to ``E[Δy_{t+1}]``
+     standardized by the std of training-side predicted expected returns —
+     leakage-free because the standardizer is built from the training slice
+     only.
    - When ``retrain_every_days < t_days``, truncate the effective contribution
      of the current forecast slice at the next retraining boundary so later
      models supersede overlapping future bars.
@@ -70,7 +74,12 @@ from hft_hmm.strategy import (
     align_signal_with_future_return,
     build_signal,
 )
-from hft_hmm.strategy.signals import _VALID_SIGNAL_POLICIES
+from hft_hmm.strategy.signals import (
+    _DISCRETE_SIGNAL_POLICIES,
+    _VALID_SIGNAL_POLICIES,
+)
+
+_MIN_CONVICTION_SCALE: Final[float] = 1e-12
 
 __category__: Final[str] = EVALUATION_LAYER
 WALK_FORWARD_REFERENCE: Final[PaperReference] = reference(
@@ -346,6 +355,13 @@ def walk_forward(
         )
         fitted = wrapper.fit(train_slice)
 
+        signal_scale: float | None = None
+        if signal_policy == "conviction_weighted":
+            train_filter = forward_filter(train_slice, fitted)
+            signal_scale = _conviction_scale_from_train_predictions(
+                train_filter.expected_next_returns
+            )
+
         filter_result = forward_filter(effective_forecast_slice, fitted)
         window_signal = build_signal(
             pd.Series(
@@ -355,8 +371,10 @@ def walk_forward(
             policy=signal_policy,
             threshold=signal_threshold,
             initial_position=initial_position,
+            scale=signal_scale,
         )
-        initial_position = int(window_signal.iloc[-1])
+        if signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
         window_pre_cost_returns = align_signal_with_future_return(
             window_signal, effective_forecast_slice
         )
@@ -389,7 +407,9 @@ def walk_forward(
             )
         )
 
-    combined_signal = pd.concat(signal_parts).astype(np.int8)
+    combined_signal = pd.concat(signal_parts)
+    if signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
     combined_signal.name = "signal"
     pre_cost_returns = pd.concat(pre_cost_return_parts)
     post_cost_returns = pd.concat(post_cost_return_parts)
@@ -408,6 +428,25 @@ def walk_forward(
         summary=summary,
         cost_bps_per_turnover=float(cost_bps_per_turnover),
     )
+
+
+def _conviction_scale_from_train_predictions(
+    train_expected_returns: np.ndarray,
+) -> float:
+    """Return a leakage-free per-window scale for the conviction-weighted policy.
+
+    Uses the standard deviation of training-side predicted expected returns,
+    floored at ``_MIN_CONVICTION_SCALE`` so degenerate training fits (every
+    prediction equal) collapse to a near-sign signal rather than a divide-by-
+    zero. Computed from training data only — no forecast-window leakage.
+    """
+    values = np.asarray(train_expected_returns, dtype=float)
+    if values.size == 0 or not np.all(np.isfinite(values)):
+        raise ValueError(
+            "training expected returns must be finite and non-empty to derive a scale."
+        )
+    raw_scale = float(values.std(ddof=0)) if values.size > 1 else 0.0
+    return max(raw_scale, _MIN_CONVICTION_SCALE)
 
 
 def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:

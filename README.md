@@ -30,8 +30,25 @@ The project separates model-quality metrics from execution-cost diagnostics:
   Sharpe, while `thresholded_hold` is reported separately to show how much
   turnover filtering helps under the conservative cost convention.
 
+### Signal policies
+
+`signal_policy` in any experiment YAML chooses how `E[Δy_{t+1}]` is mapped to
+a position:
+
+- **`sign`** (paper-faithful) — discrete ±1/0 from `np.sign(E[Δy_{t+1}])`.
+- **`thresholded_hold`** (turnover-aware diagnostic) — sign with a no-trade
+  dead-zone, holding the previous position inside `|E[Δy_{t+1}]| <= threshold`.
+- **`conviction_weighted`** (engineering extension, evaluation layer) —
+  continuous position in `[-1, +1]` proportional to `E[Δy_{t+1}]`
+  standardized by the per-window standard deviation of training-side predicted
+  expected returns. Small predictions still trade, just at smaller size; the
+  scale is computed from the training slice only, so the signal path remains
+  leakage-free.
+
 See [`docs/results_vs_paper.md`](docs/results_vs_paper.md) for the isolated
-pre-cost comparison and the separate post-cost diagnostic table.
+pre-cost comparison, the separate post-cost diagnostic table, and the
+Sharpe-improvement experiments that combine `conviction_weighted` with a `K`
+sweep and a longer training window.
 
 ## Current Status
 

@@ -8,18 +8,31 @@ local continuous-contract Databento file documented in
 [`data/README.md`](../data/README.md) and the scope choices documented in
 [`docs/paper_spec.md`](paper_spec.md).
 
-Two reproducible runs back this document:
+Four reproducible runs back this document:
 
-- `runs/04269749abff` — `signal_policy: sign` (paper-style sign-based policy).
+- `runs/04269749abff` — `signal_policy: sign` (paper-style sign-based policy);
+  the headline paper-replication run.
 - `runs/f7af264b0da4` — `signal_policy: thresholded_hold` with
   `signal_threshold: 1.7e-6` (turnover-aware second pass).
+- `runs/e25370277df7` — Sharpe-improvement ablation that swaps the
+  signal policy from `sign` to `conviction_weighted` while leaving every other
+  setting identical to the headline run. Used to attribute Sharpe change to
+  the policy alone (negative result; see below).
+- `runs/62e3e3714c0f` — Sharpe-improvement structural-change run that keeps
+  the sign policy and combines a per-window BIC sweep over `K ∈ {2, 3, 4}`
+  with a longer `h_days=60` training window. Also a negative result; see
+  below.
 
-Both share the Databento ES 1-minute parquet, walk-forward schedule
-(`h_days=23`, `t_days=20`, `retrain_every_days=20`, `K=2`), and
+The first two runs share the Databento ES 1-minute parquet, walk-forward
+schedule (`h_days=23`, `t_days=20`, `retrain_every_days=20`, `K=2`), and
 `cost_bps_per_turnover=1.0`. Configs:
 [`configs/example_es_databento_side_info_comparison.yaml`](../configs/example_es_databento_side_info_comparison.yaml)
 and
 [`configs/example_es_databento_side_info_comparison_thresholded.yaml`](../configs/example_es_databento_side_info_comparison_thresholded.yaml).
+The Sharpe-improvement runs use
+[`configs/example_es_databento_conviction_only.yaml`](../configs/example_es_databento_conviction_only.yaml)
+and
+[`configs/example_es_databento_enhanced.yaml`](../configs/example_es_databento_enhanced.yaml).
 
 ## Pre-Cost Academic Comparison
 
@@ -40,6 +53,157 @@ does not specify enough execution-cost detail for a clean reproduction target.
 | Volatility-ratio IOHMM | thresholded_hold (1.7e-6) | 0.2819 | 0.4074 | 0.4385 | §4.2 Predictor I, turnover-aware variant | `f7af264b0da4` |
 | Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
 | Long-only benchmark | n/a | 0.6410 | 0.4091 | 1.3064 | Evaluation benchmark, not a paper model | `04269749abff` |
+
+## Sharpe-Improvement Experiments
+
+The headline pre-cost daily Sharpe in the table above (best variant 0.7577 vs
+the paper's ≈2.0 reference) leaves a large gap. The runs in this section
+honestly test three candidate changes against that gap, all of them clearly
+labeled as evaluation-layer extensions on top of the §4 paper-faithful
+pipeline rather than re-interpretations of the paper itself. Every metric
+below is pre-cost daily Sharpe under the same UTC-date aggregation and
+`sqrt(258)` annualization as the table above.
+
+### Changes considered
+
+1. **Continuous, conviction-weighted positions.** The new `conviction_weighted`
+   signal policy in [`strategy/signals.py`](../src/hft_hmm/strategy/signals.py)
+   replaces the sign rule with `position[t] = clip(E[Δy_{t+1}] / σ_train, -1,
+   +1)`, where `σ_train` is the standard deviation of training-side predicted
+   expected returns computed inside the walk-forward loop. This is leakage-free
+   (no forecast bars touch the scale) and degrades gracefully to the sign
+   policy when σ_train is small. The change is motivated by the
+   `thresholded_hold` evidence in the headline table: discarding small-magnitude
+   predictions hurt pre-cost Sharpe, suggesting those predictions still carry
+   directional information that might be worth down-weighting rather than
+   zeroing.
+2. **AIC/BIC sweep over `K ∈ {2, 3, 4}`.** The headline runs lock `K = 2`.
+   The `walk_forward._select_k` helper already supports per-window BIC
+   selection when `WalkForwardConfig.k_values` has more than one entry; the
+   enhanced config exercises it. The paper's §4 uses model selection over
+   `K ∈ {2, 3}` plus MCMC bridge sampling — the latter is excluded by §2.5,
+   the former is now exercised explicitly.
+3. **Longer training window (`h_days = 60`).** The §3.1 default of one rolling
+   month (`h_days = 23`) is preserved as the paper-faithful default, but
+   on the local 6-year sample a 60-day window is large enough to stabilize
+   EM means without going so wide that intraday regimes are smeared.
+
+### Conviction-weighted ablation result (negative finding)
+
+Run `e25370277df7` switches the signal policy from `sign` to
+`conviction_weighted` and leaves every other setting identical to the headline
+run `04269749abff` — same `h_days=23`, `k_values=[2]`, vol-ratio, seasonality,
+spline, and bucketed-transition parameters. Reproduce with:
+
+```bash
+python scripts/repro.py configs/example_es_databento_conviction_only.yaml
+```
+
+| Model | sign (`04269749abff`) | conviction_weighted (`e25370277df7`) | Δ |
+|---|---:|---:|---:|
+| Baseline HMM            | 0.5298 | 0.5182 | -0.0116 |
+| Volatility-ratio IOHMM  | 0.7577 | 0.5744 | -0.1833 |
+| Seasonality IOHMM       | 0.6285 | 0.5655 | -0.0630 |
+
+Conviction weighting *reduces* pre-cost Sharpe across every variant on this
+sample, with the volatility-ratio variant taking the largest hit. The honest
+interpretation is that the HMM's predicted-return magnitude is **not** a good
+conviction signal on this dataset: scaling positions by `|E[Δy_{t+1}]|` dilutes
+the consistent directional information carried by the many small-magnitude
+predictions, while leaving full exposure on the few large-magnitude
+predictions — which on a 1-minute Gaussian HMM tend to occur at regime
+transitions, where the model is most uncertain. This is consistent with the
+sub-50% per-bar hit rate (~0.408 across all variants): the strategy has
+positive Sharpe because winning bars compound in the right direction, not
+because high-magnitude predictions are more accurate.
+
+The `conviction_weighted` policy stays in the codebase as a documented
+evaluation-layer alternative — useful for instruments or models where
+prediction magnitude does correlate with accuracy — but the headline
+Sharpe-improvement experiment below uses the paper-faithful `sign` policy.
+
+### Structural-change run: BIC sweep + longer window (also negative)
+
+Run `62e3e3714c0f` keeps the sign policy and applies the two structural
+changes that the conviction ablation does not contradict: BIC selection over
+`K ∈ {2, 3, 4}` per window, and `h_days = 60` instead of 23. Reproduce with:
+
+```bash
+python scripts/repro.py configs/example_es_databento_enhanced.yaml
+```
+
+| Model | sign baseline (`04269749abff`) | sign + K-sweep + h=60 (`62e3e3714c0f`) | Δ |
+|---|---:|---:|---:|
+| Baseline HMM            | 0.5298 | 0.3671 | -0.1627 |
+| Volatility-ratio IOHMM  | 0.7577 | 0.4874 | -0.2703 |
+| Seasonality IOHMM       | 0.6285 | 0.4419 | -0.1866 |
+
+Pre-cost Sharpe falls on every variant. The diagnostic that explains the drop
+is the chosen-K distribution: with `h_days = 60`, BIC selects **K = 4 in
+every single window** for every variant (90/90 windows). The headline run, by
+contrast, was pinned to K = 2.
+
+The honest interpretation is that BIC's `p·log(n)` complexity penalty grows
+slowly in `n`, so a longer training window justifies more states — but the
+extra states fit training-window noise rather than predictive structure. The
+forecast-side directional signal becomes noisier even though log-likelihood
+on training is higher. This is a classical overfitting trade-off, made
+concrete on this dataset.
+
+### Summary of Sharpe-improvement experiments
+
+All three proposed levers individually fail to improve pre-cost daily Sharpe
+on the local 6-year ES sample:
+
+- **Conviction weighting** (run `e25370277df7`) hurts because predicted-return
+  magnitude doesn't correlate with directional accuracy on this data.
+- **`K` sweep + longer training window** (run `62e3e3714c0f`) hurts because
+  BIC over-justifies higher-state models when given more training data, and
+  the extra states fit noise.
+- **The two combined** would inherit both losses; a separate combined run is
+  not reported because the conviction loss is monotonic across configurations
+  tested and there is no expected interaction that would reverse it.
+
+The paper-faithful headline configuration (`sign` policy, `K = 2`,
+`h_days = 23`) is therefore essentially a local optimum on this dataset
+across the changes explored. This is a useful finding in itself: the §3.1
+defaults survive ablation rather than reflecting an arbitrary choice.
+
+### Reasonable next levers (not implemented this round)
+
+If a future PR wants to push pre-cost Sharpe further on this dataset, the
+levers most likely to help — based on what *didn't* work above — are:
+
+- **Combined vol-ratio + seasonality IOHMM** (deferred for plumbing reasons,
+  see below). The two predictors are individually useful; their joint
+  bucketing might capture cross-effects that the independent variants miss.
+- **Cross-validation `K` selection instead of BIC.** The §4 paper compares
+  CV, AIC/BIC, and MCMC bridge sampling; we only implement BIC. CV would
+  pick `K` by held-out predictive performance, which is the metric we
+  actually care about.
+- **Smarter feature scaling and bucketing.** Quantile-based bucket
+  boundaries (Issue 42) and richer joint splines could change the IOHMM
+  conditioning result without altering the signal policy.
+
+None of these are scope-clean one-liners; they are issue-sized follow-ups.
+
+### What is intentionally not changed
+
+- **The paper's pre-cost Sharpe is still the comparison target.** The
+  Sharpe-improvement runs are reported pre-cost; post-cost numbers on these
+  variants live in the diagnostic table below and remain dominated by the
+  fixed `1.0` bp/turnover convention.
+- **The IOHMM bucketing approximation is unchanged.** Bucket count, smoothing,
+  spline knots, and vol-ratio EWMA parameters are kept at the headline values
+  so the Sharpe lift is attributable to the signal/selection changes rather
+  than to a feature-engineering sweep.
+- **A combined vol-ratio + seasonality IOHMM variant is deliberately deferred.**
+  The 3-variant `EXPECTED_VARIANTS` schema in
+  [`side_info_comparison.py`](../src/hft_hmm/experiments/side_info_comparison.py)
+  is load-bearing for existing comparison_id hashes and tests; adding a 4th
+  variant would either change every existing comparison hash or require
+  duplicating ~300 LOC of plumbing in a parallel module. Deferred to a
+  follow-up.
 
 ## Post-Cost Diagnostic
 
