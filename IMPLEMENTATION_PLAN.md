@@ -233,7 +233,7 @@ A gate passes only when all listed conditions are satisfied.
 ---
 
 ## Gate H — IOHMM-style transition conditioning
-**Covers:** Issues 16, 17
+**Covers:** Issues 16, 17, 42
 
 ### Must pass
 - The repo contains a clearly labeled **approximate** transition-conditioning implementation following the paper's spline-bucketed approach (discretize each spline into buckets using its roots as boundaries; train a separate transition matrix per bucket).

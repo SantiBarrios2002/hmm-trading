@@ -644,6 +644,57 @@ ML/DL inference engine outside the paper) must be reflected here as an
 
 ---
 
+## Issue 42 — Quantile boundary mode for bucketed IOHMM transitions
+**Branch:** `feat/42-quantile-boundary-mode`
+**Gate:** H
+
+### Goal
+Add an optional quantile-based boundary mode to the Issue 16 bucketed
+transition approximation so side-information features with tightly clustered
+support — notably the volatility ratio near 1.0 — can produce balanced bucket
+counts. The current `grid` mode spaces boundaries evenly across the spline
+support, which under-fills outer buckets when the feature distribution is
+heavy-tailed or concentrated.
+
+This is also the fair-baseline prerequisite for the planned HMC IOHMM
+extension tracked in `docs/dmm_mcmc_roadmap.md` (local, untracked): without
+quantile boundaries, part of any HMC win would be attributable to bucket
+imbalance rather than continuous-parametric conditioning. Issue 42 unlocks a
+three-way ablation (grid / quantile / HMC) for the planned MCMC extension.
+
+### Tasks
+- extend `BucketedTransitionConfig` with a `boundary_mode` field
+  (`"grid"` for current behavior, `"quantile"` for balanced empirical
+  buckets); default remains `"grid"` for backward compatibility
+- implement quantile-boundary computation from finite training
+  side-information values, with deterministic handling of duplicate
+  quantile values (e.g., when the feature is highly discrete)
+- preserve strict row normalization and the existing sparse-bucket
+  smoothing-toward-baseline behavior under both modes
+- degrade gracefully to `grid` when the empirical distribution has too
+  few unique values to define `R` quantile boundaries
+- surface `boundary_mode` in the bucket-observation-count logging so
+  the Issue 17 run artifacts remain inspectable post-hoc
+
+### Deliverables
+- updated `src/hft_hmm/models/iohmm_approx.py`
+- new tests in `tests/test_iohmm_approx.py`:
+  - deterministic quantile boundaries on a fixed feature distribution
+  - duplicate-quantile handling (feature with mass at a single value)
+  - sparse-feature graceful degradation
+  - backward compatibility of the existing `grid` mode (unchanged behavior)
+
+### Out of scope
+- changing Issue 17 artifacts or rerunning Gate H results
+- removing smoothing toward baseline
+- adding new side-information predictors
+
+### Acceptance notes
+See Gate H. Default behavior is preserved; the new mode is opt-in. Tracked
+at GitHub Issue #42 (follow-up from Issue 17 review).
+
+---
+
 ## Issue 24 — Paper-comparison results document
 **Branch:** `feat/24-results-vs-paper`
 **Gate:** J

@@ -36,7 +36,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -72,13 +72,19 @@ from hft_hmm.experiments.walk_forward import (
     walk_forward,
 )
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
-from hft_hmm.features.splines import SplinePredictorConfig, fit_spline_predictor
+from hft_hmm.features.splines import (
+    SplinePredictorConfig,
+    SplinePredictorResult,
+    fit_spline_predictor,
+)
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_ratio
 from hft_hmm.inference import filter_from_result
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
+    BoundaryMode,
     BucketedTransitionConfig,
     BucketedTransitionResult,
+    bucket_boundaries_from_quantiles,
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
@@ -221,6 +227,7 @@ class SideInfoComparisonConfig:
         assert retrain_every_days is not None  # normalized in WalkForwardConfig.__post_init__
         return {
             "bucketed_transition": {
+                "boundary_mode": self.bucketed_transition.boundary_mode,
                 "grid_size": int(self.bucketed_transition.grid_size),
                 "n_buckets": int(self.bucketed_transition.n_buckets),
                 "smoothing": float(self.bucketed_transition.smoothing),
@@ -299,6 +306,7 @@ class SideInfoComparisonConfig:
             n_buckets=int(bt_raw.get("n_buckets", 3)),
             smoothing=float(bt_raw.get("smoothing", 1.0)),
             grid_size=int(bt_raw.get("grid_size", 200)),
+            boundary_mode=bt_raw.get("boundary_mode", "grid"),
         )
         vr_raw = raw.get("vol_ratio", {})
         vol_ratio_cfg = VolatilityRatioConfig(
@@ -371,6 +379,7 @@ class SideInfoVariantWindow:
     n_train_obs: int
     n_forecast_obs: int
     bucket_observation_counts: tuple[int, ...]
+    boundary_mode: str
     summary: pd.DataFrame
 
     def __post_init__(self) -> None:
@@ -392,6 +401,10 @@ class SideInfoVariantWindow:
             raise ValueError(
                 "forecast_start must be strictly after train_end; "
                 f"got train_end={self.train_end} forecast_start={self.forecast_start}."
+            )
+        if self.boundary_mode not in ("grid", "quantile"):
+            raise ValueError(
+                "boundary_mode must be one of ('grid', 'quantile'), " f"got {self.boundary_mode!r}."
             )
         if not isinstance(self.summary, pd.DataFrame):
             raise TypeError("summary must be a pd.DataFrame.")
@@ -633,17 +646,21 @@ def _run_side_info_variant(
                 "fully initialized before the forecast slice."
             )
 
-        spline_result = fit_spline_predictor(feature_train, train_slice, config=config.spline)
-        boundaries = bucket_boundaries_from_spline_grid(
-            spline_result, config=config.bucketed_transition
-        )
-
         feature_train_clean = feature_train.dropna()
         if feature_train_clean.shape[0] < 2:
             raise ValueError(
                 f"variant {variant!r} window {baseline_window.index} has fewer than 2 "
                 "finite training feature observations after dropping the NaN prefix."
             )
+        spline_result = fit_spline_predictor(feature_train, train_slice, config=config.spline)
+        boundaries, boundary_mode = _bucket_boundaries_for_mode(
+            spline_result=spline_result,
+            training_values=feature_train_clean.to_numpy(),
+            config=config.bucketed_transition,
+        )
+        bucketed_config = config.bucketed_transition
+        if boundary_mode != bucketed_config.boundary_mode:
+            bucketed_config = replace(bucketed_config, boundary_mode=boundary_mode)
         nonnan_mask = feature_train.notna().to_numpy()
         decoded_aligned = decoded[nonnan_mask]
 
@@ -653,7 +670,7 @@ def _run_side_info_variant(
             n_states=chosen_k,
             baseline_transition_matrix=fitted.transition_matrix,
             bucket_boundaries=boundaries,
-            config=config.bucketed_transition,
+            config=bucketed_config,
         )
 
         posterior_at_train_end = _terminal_training_posterior(train_slice, fitted)
@@ -711,6 +728,7 @@ def _run_side_info_variant(
                 n_train_obs=int(train_slice.shape[0]),
                 n_forecast_obs=int(effective_forecast.shape[0]),
                 bucket_observation_counts=tuple(int(c) for c in bucketed.bucket_observation_counts),
+                boundary_mode=boundary_mode,
                 summary=window_summary,
             )
         )
@@ -735,6 +753,28 @@ def _run_side_info_variant(
         summary=summary,
         cost_bps_per_turnover=float(cost),
     )
+
+
+def _bucket_boundaries_for_mode(
+    *,
+    spline_result: SplinePredictorResult,
+    training_values: np.ndarray,
+    config: BucketedTransitionConfig,
+) -> tuple[np.ndarray, BoundaryMode]:
+    """Resolve bucket boundaries and return the effective boundary mode."""
+    if config.boundary_mode == "grid":
+        return bucket_boundaries_from_spline_grid(spline_result, config=config), "grid"
+    if config.boundary_mode == "quantile":
+        try:
+            return (
+                bucket_boundaries_from_quantiles(
+                    np.asarray(training_values, dtype=float), config=config
+                ),
+                "quantile",
+            )
+        except ValueError:
+            return bucket_boundaries_from_spline_grid(spline_result, config=config), "grid"
+    raise ValueError(f"unsupported boundary_mode {config.boundary_mode!r}.")
 
 
 def _build_feature(
@@ -992,6 +1032,7 @@ def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
         }
         if isinstance(w, SideInfoVariantWindow):
             record["bucket_observation_counts"] = list(w.bucket_observation_counts)
+            record["boundary_mode"] = w.boundary_mode
         lines.append(json.dumps(record, sort_keys=True, allow_nan=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

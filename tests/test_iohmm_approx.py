@@ -11,6 +11,7 @@ from hft_hmm.core.references import ENGINEERING_APPROXIMATION, module_category
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
     BucketedTransitionResult,
+    bucket_boundaries_from_quantiles,
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
@@ -64,6 +65,7 @@ def test_config_defaults() -> None:
     assert cfg.n_buckets == 3
     assert cfg.smoothing == 1.0
     assert cfg.grid_size == 200
+    assert cfg.boundary_mode == "grid"
 
 
 def test_config_rejects_n_buckets_below_2() -> None:
@@ -93,6 +95,11 @@ def test_config_rejects_grid_size_below_2() -> None:
 def test_config_rejects_non_integer_grid_size() -> None:
     with pytest.raises(TypeError, match="grid_size must be an integer"):
         BucketedTransitionConfig(grid_size=2.5)  # type: ignore[arg-type]
+
+
+def test_config_rejects_unknown_boundary_mode() -> None:
+    with pytest.raises(ValueError, match="boundary_mode must be one of"):
+        BucketedTransitionConfig(boundary_mode="middle")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +263,22 @@ def test_all_row_sums_are_one(n_buckets: int) -> None:
     result = fit_bucketed_transition_model(
         states, x, config=BucketedTransitionConfig(n_buckets=n_buckets)
     )
+    row_sums = result.transition_matrices.sum(axis=2)
+    np.testing.assert_allclose(row_sums, 1.0, atol=1e-12)
+
+
+def test_all_row_sums_are_one_under_quantile_mode() -> None:
+    states, x = _two_bucket_fixture()
+    cfg = BucketedTransitionConfig(n_buckets=2, boundary_mode="quantile")
+    boundaries = bucket_boundaries_from_quantiles(x[:-1], config=cfg)
+
+    result = fit_bucketed_transition_model(
+        states,
+        x,
+        bucket_boundaries=boundaries,
+        config=cfg,
+    )
+
     row_sums = result.transition_matrices.sum(axis=2)
     np.testing.assert_allclose(row_sums, 1.0, atol=1e-12)
 
@@ -555,6 +578,93 @@ def test_bucket_boundaries_from_spline_grid_rejects_nonmonotone_grid() -> None:
 
 
 # ---------------------------------------------------------------------------
+# bucket_boundaries_from_quantiles helper
+# ---------------------------------------------------------------------------
+
+
+def test_bucket_boundaries_from_quantiles_are_deterministic() -> None:
+    values = np.linspace(-1.0, 1.0, 1001)
+    cfg = BucketedTransitionConfig(n_buckets=4, boundary_mode="quantile")
+
+    boundaries = bucket_boundaries_from_quantiles(values, config=cfg)
+
+    assert boundaries.shape == (3,)
+    np.testing.assert_array_equal(boundaries, np.array([-0.5, 0.0, 0.5]))
+
+
+def test_quantile_boundaries_balance_clustered_bucket_counts_better_than_grid() -> None:
+    class SplineStub:
+        def evaluation_grid(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+            x_grid = np.linspace(0.2, 1.8, n)
+            return x_grid, np.zeros(n)
+
+    transition_values = np.concatenate(
+        [
+            np.full(50, 0.2),
+            np.linspace(0.98, 1.02, 900),
+            np.full(50, 1.8),
+        ]
+    )
+    x = np.concatenate([transition_values, np.array([1.0])])
+    states = np.arange(x.shape[0]) % 2
+    cfg = BucketedTransitionConfig(n_buckets=4, boundary_mode="quantile")
+    grid_boundaries = bucket_boundaries_from_spline_grid(SplineStub(), config=cfg)
+    quantile_boundaries = bucket_boundaries_from_quantiles(transition_values, config=cfg)
+
+    grid_result = fit_bucketed_transition_model(
+        states,
+        x,
+        bucket_boundaries=grid_boundaries,
+        config=cfg,
+    )
+    quantile_result = fit_bucketed_transition_model(
+        states,
+        x,
+        bucket_boundaries=quantile_boundaries,
+        config=cfg,
+    )
+
+    assert (
+        quantile_result.bucket_observation_counts.std()
+        < grid_result.bucket_observation_counts.std()
+    )
+    np.testing.assert_array_equal(
+        quantile_result.bucket_observation_counts,
+        np.array([250, 250, 250, 250]),
+    )
+
+
+def test_bucket_boundaries_from_quantiles_rejects_duplicate_quantiles() -> None:
+    values = np.concatenate(
+        [
+            np.zeros(700),
+            np.ones(100),
+            np.full(100, 2.0),
+            np.full(100, 3.0),
+        ]
+    )
+    cfg = BucketedTransitionConfig(n_buckets=4, boundary_mode="quantile")
+
+    with pytest.raises(ValueError, match="duplicate boundary values"):
+        bucket_boundaries_from_quantiles(values, config=cfg)
+
+
+def test_bucket_boundaries_from_quantiles_rejects_sparse_unique_values() -> None:
+    values = np.array([0.0, 0.0, 1.0, 1.0, 1.0])
+    cfg = BucketedTransitionConfig(n_buckets=4, boundary_mode="quantile")
+
+    with pytest.raises(ValueError, match="requires at least 4 unique"):
+        bucket_boundaries_from_quantiles(values, config=cfg)
+
+
+def test_bucket_boundaries_from_quantiles_rejects_nonfinite_values() -> None:
+    cfg = BucketedTransitionConfig(n_buckets=2, boundary_mode="quantile")
+
+    with pytest.raises(ValueError, match="finite"):
+        bucket_boundaries_from_quantiles(np.array([0.0, np.nan, 1.0]), config=cfg)
+
+
+# ---------------------------------------------------------------------------
 # __init__.py re-exports
 # ---------------------------------------------------------------------------
 
@@ -564,5 +674,6 @@ def test_exports_available_from_models_package() -> None:
 
     assert hasattr(models, "BucketedTransitionConfig")
     assert hasattr(models, "BucketedTransitionResult")
+    assert hasattr(models, "bucket_boundaries_from_quantiles")
     assert hasattr(models, "fit_bucketed_transition_model")
     assert hasattr(models, "iohmm_approx")

@@ -11,12 +11,23 @@ scheme:
   3. Estimate one K × K row-stochastic transition matrix per bucket using
      additive smoothing toward a pooled baseline matrix.
 
+Boundary placement is configurable in the Gate H experiment. The default
+``grid`` mode keeps the original deterministic behavior: boundaries are spaced
+uniformly over a fitted spline predictor's evaluation support. The opt-in
+``quantile`` mode places boundaries at empirical quantiles of the finite
+training side-information values, which can balance buckets for clustered
+features such as volatility ratios near 1.0.
+
 The result is deterministic, interpretable, and directly usable in Gate H
 experiments where a lookup ``A(x_t)`` replaces the fixed HMM transition matrix.
 
 **This is NOT the exact IOHMM model from the paper.** It is a finite-bucket
-engineering approximation intended for Gate H experiments only.  The paper's
+engineering approximation intended for Gate H experiments only. The paper's
 continuous parametric conditioning is out of scope for the current coursework.
+Both grid and quantile boundary modes remain deviations from the paper's
+continuous-parametric transition conditioning; quantile mode is empirical and
+cannot define strict boundaries for highly discrete features without falling
+back or raising at the caller boundary.
 
 References: §4 side-information / IOHMM approximation
 """
@@ -24,7 +35,7 @@ References: §4 side-information / IOHMM approximation
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import numpy as np
 
@@ -37,6 +48,8 @@ __category__: Final[str] = ENGINEERING_APPROXIMATION
 IOHMM_APPROX_REFERENCE: Final[PaperReference] = reference(
     "§4", "side-information / IOHMM approximation"
 )
+BoundaryMode = Literal["grid", "quantile"]
+_VALID_BOUNDARY_MODES: Final[tuple[str, ...]] = ("grid", "quantile")
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,9 @@ class BucketedTransitionConfig:
     ``smoothing > 0``.
     ``grid_size`` is reserved for use by ``bucket_boundaries_from_spline_grid``
     when deriving evaluation-grid boundaries from a spline predictor.
+    ``boundary_mode`` selects the integrated experiment's boundary source:
+    ``"grid"`` preserves the original spline-grid behavior, while
+    ``"quantile"`` opts into empirical quantile boundaries.
 
     References: §4 side-information / IOHMM approximation
     """
@@ -56,6 +72,7 @@ class BucketedTransitionConfig:
     n_buckets: int = 3
     smoothing: float = 1.0
     grid_size: int = 200
+    boundary_mode: BoundaryMode = "grid"
 
     def __post_init__(self) -> None:
         _validate_int(self.n_buckets, "n_buckets")
@@ -66,6 +83,15 @@ class BucketedTransitionConfig:
         _validate_int(self.grid_size, "grid_size")
         if self.grid_size < 2:
             raise ValueError(f"grid_size must be at least 2, got {self.grid_size}.")
+        if not isinstance(self.boundary_mode, str):
+            raise TypeError(
+                f"boundary_mode must be a string, got {type(self.boundary_mode).__name__}."
+            )
+        if self.boundary_mode not in _VALID_BOUNDARY_MODES:
+            raise ValueError(
+                f"boundary_mode must be one of {_VALID_BOUNDARY_MODES}, "
+                f"got {self.boundary_mode!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -267,6 +293,68 @@ def bucket_boundaries_from_spline_grid(
         np.ndarray,
         np.interp(target_positions, np.arange(config.grid_size, dtype=float), grid),
     )
+
+
+def bucket_boundaries_from_quantiles(
+    values: np.ndarray,
+    *,
+    config: BucketedTransitionConfig | None = None,
+) -> np.ndarray:
+    """Derive bucket boundaries from empirical side-information quantiles.
+
+    ``values`` must be the finite 1-D training side-information values used for
+    transition assignment. The function computes the n_buckets - 1 interior
+    quantiles with ``np.quantile(..., method="linear")`` and returns strictly
+    increasing boundaries suitable for ``fit_bucketed_transition_model``.
+
+    Degenerate empirical distributions are rejected rather than silently
+    reducing the bucket count: if fewer than ``n_buckets`` unique values exist,
+    or duplicate quantile values would violate the strict boundary invariant,
+    the function raises ``ValueError``. The integrated Gate H experiment catches
+    these degeneracies in quantile mode and falls back to the original grid
+    boundary mode for that window.
+
+    References: §4 side-information / IOHMM approximation
+    """
+    if config is None:
+        config = BucketedTransitionConfig()
+    elif not isinstance(config, BucketedTransitionConfig):
+        raise TypeError(f"config must be a BucketedTransitionConfig, got {type(config).__name__}.")
+
+    quantile_values = np.asarray(values, dtype=float)
+    if quantile_values.ndim != 1:
+        raise ValueError(
+            f"values must be one-dimensional for quantile boundaries; "
+            f"got shape {quantile_values.shape}."
+        )
+    if quantile_values.shape[0] < 2:
+        raise ValueError(
+            "values must contain at least 2 observations for quantile boundaries; "
+            f"got {quantile_values.shape[0]}."
+        )
+    if not np.all(np.isfinite(quantile_values)):
+        n_invalid = int(np.sum(~np.isfinite(quantile_values)))
+        raise ValueError(
+            "values must contain only finite entries for quantile boundaries; "
+            f"found {n_invalid} non-finite value(s)."
+        )
+    n_unique = int(np.unique(quantile_values).shape[0])
+    if n_unique < config.n_buckets:
+        raise ValueError(
+            "quantile boundary mode requires at least "
+            f"{config.n_buckets} unique finite value(s); got {n_unique}."
+        )
+
+    levels = np.linspace(0.0, 1.0, config.n_buckets + 1)[1:-1]
+    boundaries = np.asarray(np.quantile(quantile_values, levels, method="linear"), dtype=float)
+    if not np.all(np.isfinite(boundaries)):
+        raise ValueError("quantile boundaries must contain only finite values.")
+    if len(boundaries) > 1 and not np.all(boundaries[:-1] < boundaries[1:]):
+        raise ValueError(
+            "quantile boundary mode produced duplicate boundary values; "
+            "use grid mode or fewer buckets for this empirical distribution."
+        )
+    return cast(np.ndarray, boundaries)
 
 
 # ---------------------------------------------------------------------------

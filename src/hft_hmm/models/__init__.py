@@ -4,6 +4,7 @@ from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
     BucketedTransitionResult,
+    bucket_boundaries_from_quantiles,
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "PLRBaselineResult",
     "PLRSegment",
     "PLRStateSummary",
+    "bucket_boundaries_from_quantiles",
     "bucket_boundaries_from_spline_grid",
     "fit_bucketed_transition_model",
     "fit_piecewise_linear_regression",
