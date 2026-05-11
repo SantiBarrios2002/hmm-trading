@@ -81,6 +81,7 @@ from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_
 from hft_hmm.inference import filter_from_result
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
+    BoundaryMode,
     BucketedTransitionConfig,
     BucketedTransitionResult,
     bucket_boundaries_from_quantiles,
@@ -759,7 +760,7 @@ def _bucket_boundaries_for_mode(
     spline_result: SplinePredictorResult,
     training_values: np.ndarray,
     config: BucketedTransitionConfig,
-) -> tuple[np.ndarray, str]:
+) -> tuple[np.ndarray, BoundaryMode]:
     """Resolve bucket boundaries and return the effective boundary mode."""
     if config.boundary_mode == "grid":
         return bucket_boundaries_from_spline_grid(spline_result, config=config), "grid"
