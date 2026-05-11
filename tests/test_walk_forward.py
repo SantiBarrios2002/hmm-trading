@@ -404,9 +404,9 @@ def test_walk_forward_conviction_weighted_returns_continuous_positions() -> None
     assert result.signal.dtype == float
     values = result.signal.to_numpy()
     assert np.all(values >= -1.0) and np.all(values <= 1.0)
-    assert np.any((np.abs(values) > 0.0) & (np.abs(values) < 1.0)), (
-        "conviction-weighted signal should produce some intermediate-magnitude positions"
-    )
+    assert np.any(
+        (np.abs(values) > 0.0) & (np.abs(values) < 1.0)
+    ), "conviction-weighted signal should produce some intermediate-magnitude positions"
 
 
 def test_walk_forward_deterministic_with_fixed_seed() -> None:

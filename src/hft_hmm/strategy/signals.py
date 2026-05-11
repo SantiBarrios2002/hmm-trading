@@ -194,9 +194,7 @@ def build_signal(
     References: §8 sign-based trading signal (evaluation layer)
     """
     if policy not in _VALID_SIGNAL_POLICIES:
-        raise ValueError(
-            f"policy must be one of {_VALID_SIGNAL_POLICIES}, got {policy!r}."
-        )
+        raise ValueError(f"policy must be one of {_VALID_SIGNAL_POLICIES}, got {policy!r}.")
     if policy == "sign":
         return sign_signal(expected_next_returns)
     if policy == "thresholded_hold":

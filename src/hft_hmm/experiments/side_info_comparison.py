@@ -68,13 +68,13 @@ from hft_hmm.experiments.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
     WalkForwardWindow,
-    _conviction_scale_from_train_predictions,
+    conviction_scale_from_train_predictions,
     walk_forward,
 )
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
 from hft_hmm.features.splines import SplinePredictorConfig, fit_spline_predictor
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_ratio
-from hft_hmm.inference import filter_from_result, forward_filter
+from hft_hmm.inference import filter_from_result
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BucketedTransitionConfig,
@@ -668,10 +668,14 @@ def _run_side_info_variant(
 
         signal_scale: float | None = None
         if config.signal_policy == "conviction_weighted":
-            train_filter = forward_filter(train_slice, fitted)
-            signal_scale = _conviction_scale_from_train_predictions(
-                train_filter.expected_next_returns
+            train_expected = _dynamic_forward_expected_returns(
+                forecast_returns=train_slice.loc[feature_train_clean.index].to_numpy(),
+                forecast_features=feature_train_clean.to_numpy(),
+                fitted=fitted,
+                bucketed=bucketed,
+                initial_state_distribution=fitted.initial_distribution,
             )
+            signal_scale = conviction_scale_from_train_predictions(train_expected)
 
         window_signal = build_signal(
             expected_series,
@@ -956,12 +960,8 @@ def _variant_payload(
         "daily_annualized_sharpe": {
             "trading_days_per_year": 258.0,
             "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
-            "pre-cost": _json_safe(
-                daily_annualized_sharpe_ratio(result.pre_cost_returns)
-            ),
-            "post-cost": _json_safe(
-                daily_annualized_sharpe_ratio(result.post_cost_returns)
-            ),
+            "pre-cost": _json_safe(daily_annualized_sharpe_ratio(result.pre_cost_returns)),
+            "post-cost": _json_safe(daily_annualized_sharpe_ratio(result.post_cost_returns)),
         },
         "turnover_diagnostics": {
             "total_turnover": _json_safe(diagnostics.total_turnover),

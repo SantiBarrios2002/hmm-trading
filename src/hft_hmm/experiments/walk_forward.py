@@ -283,8 +283,7 @@ def walk_forward(
         )
     if not np.isfinite(signal_threshold) or signal_threshold < 0.0:
         raise ValueError(
-            "signal_threshold must be a finite non-negative float, "
-            f"got {signal_threshold!r}."
+            "signal_threshold must be a finite non-negative float, " f"got {signal_threshold!r}."
         )
 
     sorted_dates = np.array(sorted(set(returns.index.date)), dtype=object)
@@ -358,7 +357,7 @@ def walk_forward(
         signal_scale: float | None = None
         if signal_policy == "conviction_weighted":
             train_filter = forward_filter(train_slice, fitted)
-            signal_scale = _conviction_scale_from_train_predictions(
+            signal_scale = conviction_scale_from_train_predictions(
                 train_filter.expected_next_returns
             )
 
@@ -430,7 +429,7 @@ def walk_forward(
     )
 
 
-def _conviction_scale_from_train_predictions(
+def conviction_scale_from_train_predictions(
     train_expected_returns: np.ndarray,
 ) -> float:
     """Return a leakage-free per-window scale for the conviction-weighted policy.

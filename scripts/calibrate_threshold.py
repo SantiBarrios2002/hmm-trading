@@ -56,9 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     realized_parts: list[pd.Series] = []
     chosen_k = sorted(wf.k_values)[0]
 
-    available_windows = (
-        (sorted_dates.size - wf.h_days - wf.t_days) // wf.retrain_every_days
-    ) + 1
+    available_windows = ((sorted_dates.size - wf.h_days - wf.t_days) // wf.retrain_every_days) + 1
     n_windows = min(args.n_windows, available_windows)
     for w in range(n_windows):
         day_offset = w * wf.retrain_every_days
@@ -107,10 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         {
             0.0,
             float(cfg.signal_threshold),
-            *(
-                float(np.quantile(abs_expected, q))
-                for q in (0.25, 0.5, 0.75, 0.9, 0.95, 0.99)
-            ),
+            *(float(np.quantile(abs_expected, q)) for q in (0.25, 0.5, 0.75, 0.9, 0.95, 0.99)),
         }
     )
     for threshold in grid:

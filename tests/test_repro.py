@@ -23,6 +23,7 @@ from hft_hmm.experiments.runner import (
     run_experiment,
 )
 from hft_hmm.experiments.side_info_comparison import (
+    EXPECTED_VARIANTS,
     SideInfoComparisonConfig,
     comparison_id,
 )
@@ -392,11 +393,7 @@ def test_repro_cli_runs_side_info_comparison_config_end_to_end(tmp_path: Path) -
     summary = json.loads((printed / "summary.json").read_text())
     assert summary["comparison_id"] == expected_id
     assert summary["reproducible"] is True
-    assert set(summary["variants"]) == {
-        "baseline",
-        "volatility_ratio_conditioned",
-        "seasonality_conditioned",
-    }
+    assert set(summary["variants"]) == set(EXPECTED_VARIANTS)
 
 
 def test_repro_cli_warns_when_standalone_config_contains_hmm_only_fields(

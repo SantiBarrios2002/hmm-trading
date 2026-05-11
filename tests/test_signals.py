@@ -178,9 +178,7 @@ def test_conviction_weighted_signal_rejects_invalid_scale() -> None:
 def test_build_signal_dispatches_to_conviction_policy() -> None:
     values = np.array([-0.04, 0.0, 0.05], dtype=float)
 
-    via_dispatch = build_signal(
-        values, policy="conviction_weighted", scale=0.02
-    )
+    via_dispatch = build_signal(values, policy="conviction_weighted", scale=0.02)
     direct = conviction_weighted_signal(values, scale=0.02)
 
     np.testing.assert_allclose(via_dispatch.to_numpy(), direct.to_numpy())

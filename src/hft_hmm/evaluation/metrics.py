@@ -162,8 +162,7 @@ def annualized_sharpe_ratio(
     """
     if not np.isfinite(periods_per_year) or periods_per_year <= 0.0:
         raise ValueError(
-            "periods_per_year must be a finite positive float, "
-            f"got {periods_per_year!r}."
+            "periods_per_year must be a finite positive float, " f"got {periods_per_year!r}."
         )
     return sharpe_ratio(strategy_returns) * float(np.sqrt(periods_per_year))
 

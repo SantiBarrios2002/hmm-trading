@@ -33,7 +33,7 @@ VARIANT_ORDER = (
 
 
 def _load_returns(summary_path: Path) -> dict[str, dict[str, float]]:
-    with summary_path.open() as fh:
+    with summary_path.open(encoding="utf-8") as fh:
         summary = json.load(fh)
     variants = summary["variants"]
     out: dict[str, dict[str, float]] = {}
@@ -67,15 +67,16 @@ def main(argv: list[str] | None = None) -> int:
     sign = _load_returns(args.runs_root / args.sign_run_id / "summary.json")
     thr = _load_returns(args.runs_root / args.thresholded_run_id / "summary.json")
 
-    labels = [VARIANT_LABELS[v] for v in VARIANT_ORDER if v in sign]
+    variants = [v for v in VARIANT_ORDER if v in sign and v in thr]
+    labels = [VARIANT_LABELS[v] for v in variants]
     x = np.arange(len(labels))
     width = 0.2
 
     fig, ax = plt.subplots(figsize=(11, 5.5))
-    sign_pre = [sign[v]["pre-cost"] for v in VARIANT_ORDER if v in sign]
-    sign_post = [sign[v]["post-cost"] for v in VARIANT_ORDER if v in sign]
-    thr_pre = [thr[v]["pre-cost"] for v in VARIANT_ORDER if v in thr]
-    thr_post = [thr[v]["post-cost"] for v in VARIANT_ORDER if v in thr]
+    sign_pre = [sign[v]["pre-cost"] for v in variants]
+    sign_post = [sign[v]["post-cost"] for v in variants]
+    thr_pre = [thr[v]["pre-cost"] for v in variants]
+    thr_post = [thr[v]["post-cost"] for v in variants]
 
     ax.bar(x - 1.5 * width, sign_pre, width, label="sign, pre-cost", color="#246a73")
     ax.bar(x - 0.5 * width, sign_post, width, label="sign, post-cost", color="#c44569")
