@@ -10,13 +10,16 @@ import pytest
 
 from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.evaluation import (
+    annualized_sharpe_ratio,
     apply_turnover_cost,
     cumulative_return,
+    daily_annualized_sharpe_ratio,
     hit_rate,
     max_drawdown,
     sharpe_ratio,
     signal_turnover,
     summarize_backtest,
+    turnover_diagnostics,
 )
 from hft_hmm.inference import forward_filter
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult
@@ -179,6 +182,52 @@ def test_sharpe_ratio_returns_zero_for_zero_variance_or_single_period(strategy_r
     assert sharpe_ratio(strategy_returns) == 0.0
 
 
+def test_annualized_sharpe_ratio_scales_by_square_root_periods() -> None:
+    strategy_returns = np.array([0.1, 0.2, 0.3], dtype=float)
+
+    annualized = annualized_sharpe_ratio(strategy_returns, periods_per_year=4.0)
+
+    assert annualized == pytest.approx(sharpe_ratio(strategy_returns) * 2.0)
+
+
+@pytest.mark.parametrize("bad_periods", [0.0, -1.0, float("nan"), float("inf")])
+def test_annualized_sharpe_ratio_rejects_invalid_periods_per_year(bad_periods: float) -> None:
+    with pytest.raises(ValueError, match="periods_per_year"):
+        annualized_sharpe_ratio(np.array([0.1, 0.2]), periods_per_year=bad_periods)
+
+
+def test_daily_annualized_sharpe_ratio_aggregates_intraday_returns_by_day() -> None:
+    index = pd.DatetimeIndex(
+        [
+            "2024-01-02 09:30",
+            "2024-01-02 09:31",
+            "2024-01-03 09:30",
+            "2024-01-03 09:31",
+            "2024-01-04 09:30",
+            "2024-01-04 09:31",
+        ],
+        tz="UTC",
+    )
+    returns = pd.Series([0.01, 0.02, -0.01, 0.00, 0.03, 0.01], index=index)
+    daily = np.array([0.03, -0.01, 0.04])
+
+    result = daily_annualized_sharpe_ratio(returns, trading_days_per_year=4.0)
+
+    assert result == pytest.approx(sharpe_ratio(daily) * 2.0)
+
+
+def test_daily_annualized_sharpe_ratio_rejects_invalid_input() -> None:
+    with pytest.raises(TypeError, match="Series"):
+        daily_annualized_sharpe_ratio(np.array([0.1, 0.2]))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="DatetimeIndex"):
+        daily_annualized_sharpe_ratio(pd.Series([0.1, 0.2], index=[0, 1]))
+    with pytest.raises(ValueError, match="trading_days_per_year"):
+        daily_annualized_sharpe_ratio(
+            pd.Series([0.1, 0.2], index=pd.date_range("2024-01-01", periods=2)),
+            trading_days_per_year=0.0,
+        )
+
+
 def test_max_drawdown_uses_initial_capital_as_starting_peak() -> None:
     strategy_returns = np.log(np.array([0.9, 1.2, 0.8], dtype=float))
 
@@ -191,6 +240,27 @@ def test_hit_rate_counts_strictly_positive_periods() -> None:
     strategy_returns = np.array([0.1, 0.0, -0.2, 0.3], dtype=float)
 
     assert hit_rate(strategy_returns) == pytest.approx(0.5)
+
+
+def test_turnover_diagnostics_reports_total_changes_and_holding_periods() -> None:
+    signal = pd.Series([0, 1, 1, -1, -1, -1, 0], index=pd.RangeIndex(7))
+
+    diagnostics = turnover_diagnostics(signal)
+
+    assert diagnostics.total_turnover == pytest.approx(4.0)
+    assert diagnostics.mean_turnover_per_period == pytest.approx(4.0 / 6.0)
+    assert diagnostics.position_change_count == 3
+    assert diagnostics.mean_holding_periods == pytest.approx((1 + 2 + 3 + 1) / 4.0)
+
+
+def test_turnover_diagnostics_handles_no_position_changes() -> None:
+    signal = pd.Series([1, 1, 1], index=pd.RangeIndex(3))
+
+    diagnostics = turnover_diagnostics(signal)
+
+    assert diagnostics.total_turnover == pytest.approx(0.0)
+    assert diagnostics.position_change_count == 0
+    assert diagnostics.mean_holding_periods == pytest.approx(3.0)
 
 
 def test_summarize_backtest_returns_pre_and_post_cost_rows() -> None:

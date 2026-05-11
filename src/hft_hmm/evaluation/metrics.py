@@ -16,6 +16,16 @@ Cost model
 - Under this convention, a flat-to-long rebalance costs ``c`` basis points and
   a long-to-short flip costs ``2c`` basis points.
 
+Interpretation
+--------------
+- Pre-cost metrics are the primary academic signal-quality metrics for the
+  paper comparison: they ask whether the model's predicted direction contains
+  useful information before execution assumptions are imposed.
+- Post-cost metrics are cost-sensitivity diagnostics under this repo's simple
+  linear turnover convention. They are not calibrated to the paper because the
+  paper does not specify spread, slippage, fee, per-side/round-trip, or fill
+  assumptions.
+
 Sharpe ratio is reported as sample mean divided by sample standard deviation.
 For fewer than two observations, or for zero sample variance, the function
 returns ``0.0`` as a stable evaluation-layer fallback.
@@ -25,6 +35,7 @@ References: §8 sign-based trading signal (evaluation layer)
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
 import numpy as np
@@ -37,6 +48,16 @@ __category__: Final[str] = EVALUATION_LAYER
 BACKTEST_METRICS_REFERENCE: Final[PaperReference] = reference(
     "§8", "backtest metrics and cost-aware evaluation"
 )
+
+
+@dataclass(frozen=True)
+class TurnoverDiagnostics:
+    """Compact turnover and holding-period diagnostics for a signal path."""
+
+    total_turnover: float
+    mean_turnover_per_period: float
+    position_change_count: int
+    mean_holding_periods: float
 
 
 def signal_turnover(signal: pd.Series) -> pd.Series:
@@ -60,7 +81,11 @@ def apply_turnover_cost(
     *,
     cost_bps_per_turnover: float,
 ) -> pd.Series:
-    """Subtract linear turnover costs from aligned strategy returns."""
+    """Subtract linear turnover costs from aligned strategy returns.
+
+    This is a transparent cost-sensitivity diagnostic, not a reproduction of
+    the paper's unspecified execution model.
+    """
     if not isinstance(strategy_returns, pd.Series):
         raise TypeError(
             "strategy_returns must be a pd.Series, " f"got {type(strategy_returns).__name__}."
@@ -122,6 +147,61 @@ def sharpe_ratio(strategy_returns: pd.Series | np.ndarray) -> float:
     return float(mean / std)
 
 
+def annualized_sharpe_ratio(
+    strategy_returns: pd.Series | np.ndarray,
+    *,
+    periods_per_year: float,
+) -> float:
+    """Return Sharpe ratio scaled by ``sqrt(periods_per_year)``.
+
+    ``periods_per_year`` must match the sampling convention used for the input
+    returns. For 1-minute ES runs this repo uses observed bar count per year
+    from the out-of-sample artifact when reporting results-vs-paper.
+
+    References: §8 backtest metrics (evaluation layer)
+    """
+    if not np.isfinite(periods_per_year) or periods_per_year <= 0.0:
+        raise ValueError(
+            "periods_per_year must be a finite positive float, " f"got {periods_per_year!r}."
+        )
+    return sharpe_ratio(strategy_returns) * float(np.sqrt(periods_per_year))
+
+
+def daily_annualized_sharpe_ratio(
+    strategy_returns: pd.Series,
+    *,
+    trading_days_per_year: float = 258.0,
+) -> float:
+    """Return annualized Sharpe from daily aggregated strategy returns.
+
+    The paper's §4.4 convention first sums intraday strategy returns by day and
+    then scales the daily Sharpe by ``sqrt(258)``. This helper implements that
+    convention for timestamp-indexed intraday log returns.
+
+    References: §4.4 daily aggregated Sharpe (evaluation layer)
+    """
+    if not isinstance(strategy_returns, pd.Series):
+        raise TypeError(
+            "strategy_returns must be a pandas Series with a DatetimeIndex, "
+            f"got {type(strategy_returns).__name__}."
+        )
+    if not isinstance(strategy_returns.index, pd.DatetimeIndex):
+        raise TypeError("strategy_returns.index must be a DatetimeIndex.")
+    if not np.isfinite(trading_days_per_year) or trading_days_per_year <= 0.0:
+        raise ValueError(
+            "trading_days_per_year must be a finite positive float, "
+            f"got {trading_days_per_year!r}."
+        )
+
+    values = _coerce_metric_returns(strategy_returns, name="strategy_returns")
+    series = pd.Series(values, index=strategy_returns.index)
+    daily_returns = series.groupby(series.index.date).sum()
+    return annualized_sharpe_ratio(
+        daily_returns.to_numpy(dtype=float),
+        periods_per_year=trading_days_per_year,
+    )
+
+
 def max_drawdown(strategy_returns: pd.Series | np.ndarray) -> float:
     """Return the worst peak-to-trough drawdown on the compounded wealth curve."""
     values = _coerce_metric_returns(strategy_returns, name="strategy_returns")
@@ -139,13 +219,48 @@ def hit_rate(strategy_returns: pd.Series | np.ndarray) -> float:
     return float(np.mean(values > 0.0))
 
 
+def turnover_diagnostics(signal: pd.Series) -> TurnoverDiagnostics:
+    """Return total turnover, flip count, and average holding-period length.
+
+    ``position_change_count`` counts non-zero position changes. ``mean_holding_periods``
+    is the mean number of bars between changes; a signal with no changes returns
+    its full length as the holding period.
+
+    References: §8 backtest metrics (evaluation layer)
+    """
+    turnover = signal_turnover(signal)
+    changes = turnover[turnover > 0.0]
+    n_periods = int(signal.shape[0])
+    if changes.empty:
+        mean_holding = float(n_periods)
+    else:
+        change_positions = np.flatnonzero(turnover.to_numpy(dtype=float) > 0.0) + 1
+        boundaries = np.concatenate(
+            (
+                np.array([0], dtype=int),
+                change_positions,
+                np.array([n_periods], dtype=int),
+            )
+        )
+        durations = np.diff(boundaries)
+        mean_holding = float(durations.mean())
+
+    total = float(turnover.sum())
+    return TurnoverDiagnostics(
+        total_turnover=total,
+        mean_turnover_per_period=total / float(turnover.shape[0]),
+        position_change_count=int(changes.shape[0]),
+        mean_holding_periods=mean_holding,
+    )
+
+
 def summarize_backtest(
     signal: pd.Series,
     realized_returns: pd.Series,
     *,
     cost_bps_per_turnover: float = 0.0,
 ) -> pd.DataFrame:
-    """Return a compact pre-cost and post-cost summary table."""
+    """Return a compact pre-cost summary plus post-cost diagnostic table."""
     pre_cost_returns = align_signal_with_future_return(signal, realized_returns)
     turnover = signal_turnover(signal)
     post_cost_returns = apply_turnover_cost(

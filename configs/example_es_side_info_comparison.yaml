@@ -2,6 +2,8 @@ bucketed_transition:
   grid_size: 200
   n_buckets: 3
   smoothing: 1.0
+# Cost is a post-cost diagnostic only. Paper-style model comparison should use
+# pre-cost Sharpe unless an execution model is explicitly specified.
 cost_bps_per_turnover: 1.0
 data:
   end: null

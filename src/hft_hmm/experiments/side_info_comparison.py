@@ -2,7 +2,7 @@
 
 Runs three walk-forward variants on the same return series with the same
 window geometry, K selection, cost model, and reporting units, so the
-variants are directly comparable:
+variants are directly comparable on pre-cost signal quality:
 
 1. ``baseline`` — Gaussian HMM walk-forward (delegates to
    :func:`hft_hmm.experiments.walk_forward.walk_forward` so the summary
@@ -18,6 +18,11 @@ The IOHMM-style conditioning is the engineering approximation from
 side-information value, and a separate K × K transition matrix is fitted per
 bucket on the training slice, with the per-window MLE matrix as the smoothing
 prior.
+
+Pre-cost Sharpe is the primary paper-comparison metric. Post-cost results are
+reported separately as turnover-cost diagnostics under the repo's fixed linear
+cost convention; they are not calibrated to the paper's unspecified execution
+model.
 
 References: §4 side-information / IOHMM evaluation (evaluation layer)
 """
@@ -48,10 +53,12 @@ from hft_hmm.core import EVALUATION_LAYER, PaperReference, reference
 from hft_hmm.evaluation import (
     apply_turnover_cost,
     cumulative_return,
+    daily_annualized_sharpe_ratio,
     hit_rate,
     max_drawdown,
     sharpe_ratio,
     signal_turnover,
+    turnover_diagnostics,
 )
 from hft_hmm.experiments._data_loading import (
     load_returns_from_source,
@@ -61,6 +68,7 @@ from hft_hmm.experiments.walk_forward import (
     WalkForwardConfig,
     WalkForwardResult,
     WalkForwardWindow,
+    conviction_scale_from_train_predictions,
     walk_forward,
 )
 from hft_hmm.features.seasonality import SeasonalityConfig, intraday_seasonality
@@ -74,7 +82,15 @@ from hft_hmm.models.iohmm_approx import (
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
-from hft_hmm.strategy import align_signal_with_future_return, sign_signal
+from hft_hmm.strategy import (
+    SignalPolicy,
+    align_signal_with_future_return,
+    build_signal,
+)
+from hft_hmm.strategy.signals import (
+    _DISCRETE_SIGNAL_POLICIES,
+    _VALID_SIGNAL_POLICIES,
+)
 
 __category__: Final[str] = EVALUATION_LAYER
 SIDE_INFO_COMPARISON_REFERENCE: Final[PaperReference] = reference(
@@ -120,6 +136,8 @@ class SideInfoComparisonConfig:
     vol_ratio: VolatilityRatioConfig = field(default_factory=VolatilityRatioConfig)
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
     cost_bps_per_turnover: float = 0.0
+    signal_policy: SignalPolicy = "sign"
+    signal_threshold: float = 0.0
     notes: str = ""
     sha256: str | None = None
 
@@ -160,6 +178,18 @@ class SideInfoComparisonConfig:
                 f"cost_bps_per_turnover must be a finite non-negative float, got {cost!r}."
             )
         object.__setattr__(self, "cost_bps_per_turnover", cost)
+        if self.signal_policy not in _VALID_SIGNAL_POLICIES:
+            raise ValueError(
+                f"signal_policy must be one of {_VALID_SIGNAL_POLICIES}, "
+                f"got {self.signal_policy!r}."
+            )
+        signal_threshold = float(self.signal_threshold)
+        if not math.isfinite(signal_threshold) or signal_threshold < 0.0:
+            raise ValueError(
+                "signal_threshold must be a finite non-negative float, "
+                f"got {self.signal_threshold!r}."
+            )
+        object.__setattr__(self, "signal_threshold", signal_threshold)
 
         if self.data.is_reproducible:
             if self.sha256 is None:
@@ -205,6 +235,8 @@ class SideInfoComparisonConfig:
                 "normalize": bool(self.seasonality.normalize),
             },
             "sha256": self.sha256,
+            "signal_policy": self.signal_policy,
+            "signal_threshold": float(self.signal_threshold),
             "spline": {
                 "degree": int(self.spline.degree),
                 "demean": bool(self.spline.demean),
@@ -289,6 +321,8 @@ class SideInfoComparisonConfig:
             vol_ratio=vol_ratio_cfg,
             seasonality=seasonality_cfg,
             cost_bps_per_turnover=float(raw.get("cost_bps_per_turnover", 0.0)),
+            signal_policy=raw.get("signal_policy", "sign"),
+            signal_threshold=float(raw.get("signal_threshold", 0.0)),
             notes=str(raw.get("notes", "")),
             sha256=raw.get("sha256"),
         )
@@ -458,6 +492,8 @@ def run_side_info_comparison(
         returns,
         config.walk_forward,
         cost_bps_per_turnover=config.cost_bps_per_turnover,
+        signal_policy=config.signal_policy,
+        signal_threshold=config.signal_threshold,
     )
     baseline_variant = _build_baseline_variant(baseline_wf, config.cost_bps_per_turnover)
     vol_variant = _run_side_info_variant(
@@ -558,6 +594,7 @@ def _run_side_info_variant(
     pre_cost_parts: list[pd.Series] = []
     post_cost_parts: list[pd.Series] = []
     chosen_ks: list[int] = []
+    initial_position = 0
 
     for baseline_window in baseline_windows:
         train_mask = (bar_dates >= baseline_window.train_start.date()) & (
@@ -628,7 +665,27 @@ def _run_side_info_variant(
             initial_state_distribution=posterior_at_train_end,
         )
         expected_series = pd.Series(expected, index=effective_forecast.index)
-        window_signal = sign_signal(expected_series)
+
+        signal_scale: float | None = None
+        if config.signal_policy == "conviction_weighted":
+            train_expected = _dynamic_forward_expected_returns(
+                forecast_returns=train_slice.loc[feature_train_clean.index].to_numpy(),
+                forecast_features=feature_train_clean.to_numpy(),
+                fitted=fitted,
+                bucketed=bucketed,
+                initial_state_distribution=fitted.initial_distribution,
+            )
+            signal_scale = conviction_scale_from_train_predictions(train_expected)
+
+        window_signal = build_signal(
+            expected_series,
+            policy=config.signal_policy,
+            threshold=config.signal_threshold,
+            initial_position=initial_position,
+            scale=signal_scale,
+        )
+        if config.signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
         window_pre_cost = align_signal_with_future_return(window_signal, effective_forecast)
         window_post_cost = apply_turnover_cost(
             window_pre_cost,
@@ -658,7 +715,9 @@ def _run_side_info_variant(
             )
         )
 
-    combined_signal = pd.concat(signal_parts).astype(np.int8)
+    combined_signal = pd.concat(signal_parts)
+    if config.signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
     combined_signal.name = "signal"
     pre_cost_returns = pd.concat(pre_cost_parts)
     post_cost_returns = pd.concat(post_cost_parts)
@@ -856,6 +915,17 @@ def _write_summary(
         "reproducible": reproducible,
         "frequency": config.frequency,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
+        "metric_interpretation": {
+            "pre-cost": (
+                "primary academic signal-quality metric for paper comparison; "
+                "no execution costs applied"
+            ),
+            "post-cost": (
+                "cost-sensitivity diagnostic under the repo's linear turnover "
+                "cost convention; not calibrated to the paper's unspecified "
+                "execution model"
+            ),
+        },
         "variants": {
             name: _variant_payload(name, cmp_id, result.variants[name])
             for name in EXPECTED_VARIANTS
@@ -873,6 +943,7 @@ def _variant_payload(
     result: SideInfoVariantResult,
 ) -> dict[str, Any]:
     aligned_returns = result.pre_cost_returns
+    diagnostics = turnover_diagnostics(result.signal)
     sample_window = {
         "start": aligned_returns.index.min().isoformat(),
         "end": aligned_returns.index.max().isoformat(),
@@ -886,6 +957,22 @@ def _variant_payload(
         "n_forecast_obs": int(aligned_returns.shape[0]),
         "cost_bps_per_turnover": float(result.cost_bps_per_turnover),
         "summary": _summary_to_payload(result.summary),
+        "daily_annualized_sharpe": {
+            "trading_days_per_year": 258.0,
+            "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+            "pre-cost": _json_safe(daily_annualized_sharpe_ratio(result.pre_cost_returns)),
+            "post-cost": _json_safe(daily_annualized_sharpe_ratio(result.post_cost_returns)),
+        },
+        "turnover_diagnostics": {
+            "total_turnover": _json_safe(diagnostics.total_turnover),
+            "mean_turnover_per_period": _json_safe(diagnostics.mean_turnover_per_period),
+            "position_change_count": int(diagnostics.position_change_count),
+            "mean_holding_periods": _json_safe(diagnostics.mean_holding_periods),
+            "cost_drag_cumulative_return": _json_safe(
+                cumulative_return(result.pre_cost_returns)
+                - cumulative_return(result.post_cost_returns)
+            ),
+        },
     }
 
 

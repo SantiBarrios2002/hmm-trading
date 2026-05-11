@@ -13,8 +13,11 @@ from hft_hmm.inference import forward_filter
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult
 from hft_hmm.strategy import (
     align_signal_with_future_return,
+    build_signal,
+    conviction_weighted_signal,
     sign_signal,
     signal_from_filter_result,
+    thresholded_hold_signal,
     thresholded_signal,
 )
 
@@ -109,6 +112,83 @@ def test_thresholded_signal_rejects_negative_or_non_finite_threshold() -> None:
         thresholded_signal(values, threshold=float("inf"))
     with pytest.raises(ValueError, match="finite"):
         thresholded_signal(values, threshold=float("nan"))
+
+
+def test_thresholded_hold_signal_keeps_previous_position_inside_dead_zone() -> None:
+    values = np.array([0.0, 0.04, 0.01, -0.01, -0.05, 0.0, 0.08], dtype=float)
+
+    signal = thresholded_hold_signal(values, threshold=0.02)
+
+    np.testing.assert_array_equal(signal.to_numpy(), np.array([0, 1, 1, 1, -1, -1, 1]))
+
+
+def test_thresholded_hold_signal_accepts_initial_position() -> None:
+    values = np.array([0.0, 0.01, -0.03], dtype=float)
+
+    signal = thresholded_hold_signal(values, threshold=0.02, initial_position=1)
+
+    np.testing.assert_array_equal(signal.to_numpy(), np.array([1, 1, -1]))
+
+
+def test_thresholded_hold_signal_rejects_invalid_parameters() -> None:
+    values = np.array([0.01, -0.02, 0.03], dtype=float)
+    with pytest.raises(ValueError, match="non-negative"):
+        thresholded_hold_signal(values, threshold=-0.01)
+    with pytest.raises(ValueError, match="initial_position"):
+        thresholded_hold_signal(values, threshold=0.01, initial_position=2)
+
+
+def test_conviction_weighted_signal_scales_and_clips() -> None:
+    values = np.array([-0.04, -0.01, 0.0, 0.005, 0.02, 0.05], dtype=float)
+
+    signal = conviction_weighted_signal(values, scale=0.02)
+
+    assert isinstance(signal, pd.Series)
+    assert signal.dtype == float
+    assert signal.name == "signal"
+    np.testing.assert_allclose(
+        signal.to_numpy(),
+        np.array([-1.0, -0.5, 0.0, 0.25, 1.0, 1.0]),
+    )
+
+
+def test_conviction_weighted_signal_preserves_series_index() -> None:
+    index = pd.date_range("2024-01-01", periods=4, freq="1min")
+    series = pd.Series([0.01, -0.02, 0.0, 0.04], index=index)
+
+    signal = conviction_weighted_signal(series, scale=0.02)
+
+    assert signal.index.equals(index)
+    np.testing.assert_allclose(signal.to_numpy(), np.array([0.5, -1.0, 0.0, 1.0]))
+
+
+def test_conviction_weighted_signal_rejects_invalid_scale() -> None:
+    values = np.array([0.01, -0.02], dtype=float)
+
+    with pytest.raises(ValueError, match="strictly positive"):
+        conviction_weighted_signal(values, scale=0.0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        conviction_weighted_signal(values, scale=-1.0)
+    with pytest.raises(ValueError, match="finite"):
+        conviction_weighted_signal(values, scale=float("inf"))
+    with pytest.raises(ValueError, match="strictly positive"):
+        conviction_weighted_signal(values, scale=0.01, clip=0.0)
+
+
+def test_build_signal_dispatches_to_conviction_policy() -> None:
+    values = np.array([-0.04, 0.0, 0.05], dtype=float)
+
+    via_dispatch = build_signal(values, policy="conviction_weighted", scale=0.02)
+    direct = conviction_weighted_signal(values, scale=0.02)
+
+    np.testing.assert_allclose(via_dispatch.to_numpy(), direct.to_numpy())
+
+
+def test_build_signal_requires_scale_for_conviction_policy() -> None:
+    values = np.array([0.01, -0.02], dtype=float)
+
+    with pytest.raises(ValueError, match="scale"):
+        build_signal(values, policy="conviction_weighted")
 
 
 def test_align_signal_with_future_return_uses_previous_signal() -> None:

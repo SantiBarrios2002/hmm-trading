@@ -1,9 +1,10 @@
 """Run an experiment YAML end-to-end and write artifacts to ``runs/<run_id>/``.
 
-Config dispatch is schema-based: a top-level ``predictor`` key selects the
-standalone predictor runner. In that mode, HMM-only ``walk_forward`` fields are
-not consumed: ``min_variance``, ``variance_floor_policy``, ``k_values``,
-``n_iter``, and ``tol``.
+Config dispatch is schema-based: a top-level ``bucketed_transition`` key selects
+the side-information comparison runner, and a top-level ``predictor`` key
+selects the standalone predictor runner. In standalone predictor mode, HMM-only
+``walk_forward`` fields are not consumed: ``min_variance``,
+``variance_floor_policy``, ``k_values``, ``n_iter``, and ``tol``.
 
 Usage:
     python scripts/repro.py configs/example_es_csv.yaml
@@ -22,6 +23,10 @@ import yaml
 
 from hft_hmm.config import ExperimentConfig
 from hft_hmm.experiments.runner import run_experiment
+from hft_hmm.experiments.side_info_comparison import (
+    SideInfoComparisonConfig,
+    run_side_info_comparison,
+)
 from hft_hmm.experiments.standalone_predictor import (
     StandaloneExperimentConfig,
     run_standalone_experiment,
@@ -62,7 +67,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    if "predictor" in raw:
+    if "bucketed_transition" in raw:
+        comparison_config = SideInfoComparisonConfig.from_dict(raw)
+        artifacts = run_side_info_comparison(
+            comparison_config, runs_root=args.runs_root, force=args.force
+        )
+    elif "predictor" in raw:
         _warn_on_ignored_hmm_keys(raw)
         standalone_config = StandaloneExperimentConfig.from_dict(raw)
         artifacts = run_standalone_experiment(

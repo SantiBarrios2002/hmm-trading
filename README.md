@@ -13,6 +13,43 @@ This repository is a course project implementation inspired by:
 
 The intent is a clean, reviewable, academically defensible replication pipeline, not a production trading system and not a claim of exact numerical reproduction of the paper.
 
+## How To Read Performance Metrics
+
+The project separates model-quality metrics from execution-cost diagnostics:
+
+- **Pre-cost results are the main academic comparison.** They measure whether
+  the HMM signal has predictive information before trading-cost assumptions are
+  imposed. This is the cleanest comparison to the paper because the paper
+  emphasizes pre-cost Sharpe and does not fully specify its execution model.
+- **Post-cost results are diagnostic stress tests.** They subtract the repo's
+  simple `cost_bps_per_turnover` convention after signal alignment. The default
+  `1.0` basis point per unit turnover is deliberately transparent and
+  conservative at 1-minute cadence; it is not tuned to match the paper.
+- **Large pre/post gaps usually mean high turnover, not necessarily no signal.**
+  For the results-vs-paper branch, the sign policy has the best pre-cost
+  Sharpe, while `thresholded_hold` is reported separately to show how much
+  turnover filtering helps under the conservative cost convention.
+
+### Signal policies
+
+`signal_policy` in any experiment YAML chooses how `E[Δy_{t+1}]` is mapped to
+a position:
+
+- **`sign`** (paper-faithful) — discrete ±1/0 from `np.sign(E[Δy_{t+1}])`.
+- **`thresholded_hold`** (turnover-aware diagnostic) — sign with a no-trade
+  dead-zone, holding the previous position inside `|E[Δy_{t+1}]| <= threshold`.
+- **`conviction_weighted`** (engineering extension, evaluation layer) —
+  continuous position in `[-1, +1]` proportional to `E[Δy_{t+1}]`
+  standardized by the per-window standard deviation of training-side predicted
+  expected returns. Small predictions still trade, just at smaller size; the
+  scale is computed from the training slice only, so the signal path remains
+  leakage-free.
+
+See [`docs/results_vs_paper.md`](docs/results_vs_paper.md) for the isolated
+pre-cost comparison, the separate post-cost diagnostic table, and the
+Sharpe-improvement experiments that combine `conviction_weighted` with a `K`
+sweep and a longer training window.
+
 ## Current Status
 
 The repository currently contains:
@@ -22,13 +59,14 @@ The repository currently contains:
 - model-selection helpers (AIC/BIC) and log-space forward filtering
 - sign-based signal generation plus backtest metrics with turnover-cost accounting
 - a walk-forward experiment runner with deterministic YAML configs, run hashing, and saved artifacts
+- results-vs-paper artifacts that keep the pre-cost academic comparison separate from post-cost cost-sensitivity diagnostics
 - tracked ES 1-minute CSV fixtures for integration tests and reproducibility checks
 - repository automation for tests, linting, formatting, and typing
 
-The core single-asset HMM replication pipeline is implemented through the evaluation layer. The main remaining scope is:
-- side-information features such as volatility ratio and intraday seasonality
-- spline-based predictor fitting and IOHMM-style transition conditioning approximations
-- figure-generation and presentation-oriented project artifacts
+The core single-asset HMM replication pipeline is implemented through the
+evaluation layer, including side-information features, spline-based predictor
+fitting, IOHMM-style transition conditioning approximations, and
+presentation-oriented results artifacts.
 
 ## Repository Contents
 

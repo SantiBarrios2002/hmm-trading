@@ -1,3 +1,5 @@
+# Cost is a post-cost diagnostic only. Paper-style model comparison should use
+# pre-cost Sharpe unless an execution model is explicitly specified.
 cost_bps_per_turnover: 1.0
 data:
   end: null

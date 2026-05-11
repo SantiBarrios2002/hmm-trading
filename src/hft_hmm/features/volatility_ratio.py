@@ -109,7 +109,9 @@ def volatility_ratio(
 
     Both estimators share ``decay`` and differ only in the truncation window.
     The first ``slow_window`` positions are NaN. The output is a pandas Series
-    aligned with the input index.
+    aligned with the input index. When both volatility estimates are exactly
+    zero, the ratio is set to the neutral value ``1.0`` so flat no-volatility
+    stretches do not propagate ``0 / 0`` NaNs into walk-forward forecasts.
 
     References: §4.2 volatility ratio
     """
@@ -121,6 +123,8 @@ def volatility_ratio(
     sigma_fast = ewma_volatility(returns, decay=config.decay, window=config.fast_window)
     sigma_slow = ewma_volatility(returns, decay=config.decay, window=config.slow_window)
     ratio = sigma_fast / sigma_slow
+    zero_volatility = (sigma_fast == 0.0) & (sigma_slow == 0.0)
+    ratio = ratio.mask(zero_volatility, 1.0)
     return ratio.rename(returns.name)
 
 

@@ -26,8 +26,15 @@ Algorithm
      :func:`~hft_hmm.selection.compare_state_counts` and its ``best_by_bic``
      choice; otherwise use the single candidate directly.
    - Run :func:`~hft_hmm.inference.forward_filter` on the forecast slice and
-     emit a sign-based signal via
-     :func:`~hft_hmm.strategy.signal_from_filter_result`.
+     emit a signal via :func:`~hft_hmm.strategy.build_signal`. The default
+     ``signal_policy="sign"`` reproduces the sign-based path; setting it to
+     ``"thresholded_hold"`` gates trades on ``|E[Δy_{t+1}]| > signal_threshold``
+     and holds the prior position inside the dead-zone (turnover-aware),
+     including across retraining windows. ``"conviction_weighted"`` returns a
+     continuous position in ``[-1, +1]`` proportional to ``E[Δy_{t+1}]``
+     standardized by the std of training-side predicted expected returns —
+     leakage-free because the standardizer is built from the training slice
+     only.
    - When ``retrain_every_days < t_days``, truncate the effective contribution
      of the current forecast slice at the next retraining boundary so later
      models supersede overlapping future bars.
@@ -62,7 +69,17 @@ from hft_hmm.models.gaussian_hmm import (
     VarianceFloorPolicy,
 )
 from hft_hmm.selection import compare_state_counts
-from hft_hmm.strategy import align_signal_with_future_return, signal_from_filter_result
+from hft_hmm.strategy import (
+    SignalPolicy,
+    align_signal_with_future_return,
+    build_signal,
+)
+from hft_hmm.strategy.signals import (
+    _DISCRETE_SIGNAL_POLICIES,
+    _VALID_SIGNAL_POLICIES,
+)
+
+_MIN_CONVICTION_SCALE: Final[float] = 1e-12
 
 __category__: Final[str] = EVALUATION_LAYER
 WALK_FORWARD_REFERENCE: Final[PaperReference] = reference(
@@ -234,13 +251,16 @@ def walk_forward(
     config: WalkForwardConfig,
     *,
     cost_bps_per_turnover: float = 0.0,
+    signal_policy: SignalPolicy = "sign",
+    signal_threshold: float = 0.0,
 ) -> WalkForwardResult:
     """Run the paper's rolling-window retraining scheme on a return series.
 
     The input ``returns`` must be a ``pd.Series`` with a tz-aware monotonic
     ``DatetimeIndex`` so that calendar-date grouping is unambiguous. The
-    ``cost_bps_per_turnover`` parameter only affects evaluation-layer metrics;
-    it does not change the signal path itself.
+    ``cost_bps_per_turnover`` parameter only affects post-cost diagnostic
+    metrics; it does not change the signal path itself or the pre-cost paper
+    comparison.
 
     References: §2.3 rolling-window overnight retraining scheme (evaluation layer)
     """
@@ -256,6 +276,15 @@ def walk_forward(
         raise ValueError("returns.index must not contain duplicates.")
     if not np.all(np.isfinite(np.asarray(returns, dtype=float))):
         raise ValueError("returns must contain only finite values; drop NaN/inf first.")
+
+    if signal_policy not in _VALID_SIGNAL_POLICIES:
+        raise ValueError(
+            f"signal_policy must be one of {_VALID_SIGNAL_POLICIES}, got {signal_policy!r}."
+        )
+    if not np.isfinite(signal_threshold) or signal_threshold < 0.0:
+        raise ValueError(
+            "signal_threshold must be a finite non-negative float, " f"got {signal_threshold!r}."
+        )
 
     sorted_dates = np.array(sorted(set(returns.index.date)), dtype=object)
     n_dates = sorted_dates.size
@@ -278,6 +307,7 @@ def walk_forward(
     pre_cost_return_parts: list[pd.Series] = []
     post_cost_return_parts: list[pd.Series] = []
     bar_dates = returns.index.date
+    initial_position = 0
 
     for window_index, day_offset in enumerate(range(0, max_window_start + 1, retrain_every_days)):
         train_start_date = sorted_dates[day_offset]
@@ -324,12 +354,26 @@ def walk_forward(
         )
         fitted = wrapper.fit(train_slice)
 
+        signal_scale: float | None = None
+        if signal_policy == "conviction_weighted":
+            train_filter = forward_filter(train_slice, fitted)
+            signal_scale = conviction_scale_from_train_predictions(
+                train_filter.expected_next_returns
+            )
+
         filter_result = forward_filter(effective_forecast_slice, fitted)
-        window_signal = signal_from_filter_result(
-            filter_result,
-            threshold=0.0,
-            index=effective_forecast_slice.index,
+        window_signal = build_signal(
+            pd.Series(
+                filter_result.expected_next_returns,
+                index=effective_forecast_slice.index,
+            ),
+            policy=signal_policy,
+            threshold=signal_threshold,
+            initial_position=initial_position,
+            scale=signal_scale,
         )
+        if signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
         window_pre_cost_returns = align_signal_with_future_return(
             window_signal, effective_forecast_slice
         )
@@ -362,7 +406,9 @@ def walk_forward(
             )
         )
 
-    combined_signal = pd.concat(signal_parts).astype(np.int8)
+    combined_signal = pd.concat(signal_parts)
+    if signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
     combined_signal.name = "signal"
     pre_cost_returns = pd.concat(pre_cost_return_parts)
     post_cost_returns = pd.concat(post_cost_return_parts)
@@ -381,6 +427,25 @@ def walk_forward(
         summary=summary,
         cost_bps_per_turnover=float(cost_bps_per_turnover),
     )
+
+
+def conviction_scale_from_train_predictions(
+    train_expected_returns: np.ndarray,
+) -> float:
+    """Return a leakage-free per-window scale for the conviction-weighted policy.
+
+    Uses the standard deviation of training-side predicted expected returns,
+    floored at ``_MIN_CONVICTION_SCALE`` so degenerate training fits (every
+    prediction equal) collapse to a near-sign signal rather than a divide-by-
+    zero. Computed from training data only — no forecast-window leakage.
+    """
+    values = np.asarray(train_expected_returns, dtype=float)
+    if values.size == 0 or not np.all(np.isfinite(values)):
+        raise ValueError(
+            "training expected returns must be finite and non-empty to derive a scale."
+        )
+    raw_scale = float(values.std(ddof=0)) if values.size > 1 else 0.0
+    return max(raw_scale, _MIN_CONVICTION_SCALE)
 
 
 def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:

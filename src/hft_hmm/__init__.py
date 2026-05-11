@@ -30,13 +30,17 @@ from hft_hmm.data import (
 )
 from hft_hmm.evaluation import (
     BACKTEST_METRICS_REFERENCE,
+    TurnoverDiagnostics,
+    annualized_sharpe_ratio,
     apply_turnover_cost,
     cumulative_return,
+    daily_annualized_sharpe_ratio,
     hit_rate,
     max_drawdown,
     sharpe_ratio,
     signal_turnover,
     summarize_backtest,
+    turnover_diagnostics,
 )
 from hft_hmm.experiments import (
     WALK_FORWARD_REFERENCE,
@@ -108,6 +112,7 @@ from hft_hmm.strategy import (
     align_signal_with_future_return,
     sign_signal,
     signal_from_filter_result,
+    thresholded_hold_signal,
     thresholded_signal,
 )
 
@@ -160,6 +165,7 @@ __all__ = [
     "RunArtifacts",
     "SeasonalityConfig",
     "StateGrid",
+    "TurnoverDiagnostics",
     "VolatilityRatioConfig",
     "WalkForwardConfig",
     "WalkForwardResult",
@@ -167,6 +173,7 @@ __all__ = [
     "__version__",
     "aic",
     "align_signal_with_future_return",
+    "annualized_sharpe_ratio",
     "apply_turnover_cost",
     "bic",
     "compare_state_counts",
@@ -175,6 +182,7 @@ __all__ = [
     "compute_log_returns",
     "count_gaussian_hmm_parameters",
     "cumulative_return",
+    "daily_annualized_sharpe_ratio",
     "default_labels",
     "ewma_volatility",
     "fit_piecewise_linear_regression",
@@ -201,8 +209,10 @@ __all__ = [
     "sign_signal",
     "signal_turnover",
     "signal_from_filter_result",
+    "thresholded_hold_signal",
     "summarize_backtest",
     "thresholded_signal",
+    "turnover_diagnostics",
     "train_test_split_time",
     "intraday_seasonality",
     "validate_market_data",

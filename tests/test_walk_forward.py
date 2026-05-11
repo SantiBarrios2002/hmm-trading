@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -239,6 +240,56 @@ def test_walk_forward_drops_the_first_bar_of_each_forecast_window() -> None:
     pd.testing.assert_index_equal(result.post_cost_returns.index, expected_index)
 
 
+def test_walk_forward_thresholded_hold_carries_position_across_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    returns = _regime_switching_returns(n_days=5, bars_per_day=3, seed=42)
+    config = WalkForwardConfig(
+        h_days=2,
+        t_days=1,
+        retrain_every_days=1,
+        k_values=(2,),
+        random_state=0,
+    )
+    expected_by_window = [
+        np.array([0.03, 0.0, 0.0], dtype=float),
+        np.array([0.0, 0.0, -0.03], dtype=float),
+        np.array([0.0, 0.0, 0.0], dtype=float),
+    ]
+    call_counter = {"n": 0}
+
+    class FakeGaussianHMMWrapper:
+        def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def fit(self, train_slice: pd.Series):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(log_likelihood=0.0)
+
+    def fake_forward_filter(forecast_slice: pd.Series, fitted):  # type: ignore[no-untyped-def]
+        expected = expected_by_window[call_counter["n"]]
+        call_counter["n"] += 1
+        assert expected.shape[0] == forecast_slice.shape[0]
+        return SimpleNamespace(expected_next_returns=expected)
+
+    monkeypatch.setattr(walk_forward_module, "GaussianHMMWrapper", FakeGaussianHMMWrapper)
+    monkeypatch.setattr(walk_forward_module, "forward_filter", fake_forward_filter)
+
+    result = walk_forward(
+        returns,
+        config,
+        signal_policy="thresholded_hold",
+        signal_threshold=0.02,
+    )
+
+    signals_by_window = [
+        result.signal.loc[window.forecast_start : window.forecast_end].to_numpy()
+        for window in result.windows
+    ]
+    np.testing.assert_array_equal(signals_by_window[0], np.array([1, 1, 1], dtype=np.int8))
+    np.testing.assert_array_equal(signals_by_window[1], np.array([1, 1, -1], dtype=np.int8))
+    np.testing.assert_array_equal(signals_by_window[2], np.array([-1, -1, -1], dtype=np.int8))
+
+
 def test_walk_forward_boundary_assert_blocks_future_leak(monkeypatch: pytest.MonkeyPatch) -> None:
     """Probe the in-loop leakage guard by short-circuiting forecast slicing."""
     returns = _regime_switching_returns(n_days=8, bars_per_day=10, seed=0)
@@ -342,6 +393,20 @@ def test_walk_forward_window_summaries_match_per_window_backtests() -> None:
         realized = returns.loc[window_signal.index]
         expected_summary = summarize_backtest(window_signal, realized, cost_bps_per_turnover=1.0)
         pd.testing.assert_frame_equal(window.summary, expected_summary)
+
+
+def test_walk_forward_conviction_weighted_returns_continuous_positions() -> None:
+    returns = _regime_switching_returns(n_days=10, bars_per_day=20, seed=17)
+    config = WalkForwardConfig(h_days=5, t_days=2, k_values=(2,), random_state=0)
+
+    result = walk_forward(returns, config, signal_policy="conviction_weighted")
+
+    assert result.signal.dtype == float
+    values = result.signal.to_numpy()
+    assert np.all(values >= -1.0) and np.all(values <= 1.0)
+    assert np.any(
+        (np.abs(values) > 0.0) & (np.abs(values) < 1.0)
+    ), "conviction-weighted signal should produce some intermediate-magnitude positions"
 
 
 def test_walk_forward_deterministic_with_fixed_seed() -> None:

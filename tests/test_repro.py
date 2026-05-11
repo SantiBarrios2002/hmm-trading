@@ -22,6 +22,11 @@ from hft_hmm.experiments.runner import (
     NON_REPRODUCIBLE_WARNING,
     run_experiment,
 )
+from hft_hmm.experiments.side_info_comparison import (
+    EXPECTED_VARIANTS,
+    SideInfoComparisonConfig,
+    comparison_id,
+)
 from hft_hmm.experiments.standalone_predictor import (
     StandaloneExperimentConfig,
     standalone_run_id,
@@ -37,6 +42,7 @@ SAMPLE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
 MONTH_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_csv.yaml"
 STANDALONE_VOL_CONFIG = REPO_ROOT / "configs" / "example_es_vol_ratio_standalone.yaml"
+SIDE_INFO_COMPARISON_CONFIG = REPO_ROOT / "configs" / "example_es_side_info_comparison.yaml"
 REPRO_SCRIPT = REPO_ROOT / "scripts" / "repro.py"
 SAMPLE_SHA256 = compute_file_sha256(SAMPLE_FIXTURE)
 
@@ -326,6 +332,8 @@ def test_repro_cli_runs_example_config_end_to_end(tmp_path: Path) -> None:
     metrics = json.loads((printed / "metrics.json").read_text())
     assert metrics["reproducible"] is True
     assert metrics["n_windows"] >= 1
+    assert "primary academic" in metrics["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in metrics["metric_interpretation"]["post-cost"]
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
 
 
@@ -355,7 +363,37 @@ def test_repro_cli_runs_standalone_predictor_config_end_to_end(tmp_path: Path) -
     assert metrics["predictor"] == "volatility_ratio"
     assert metrics["reproducible"] is True
     assert metrics["n_windows"] >= 1
+    assert "primary academic" in metrics["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in metrics["metric_interpretation"]["post-cost"]
     assert np.isfinite(metrics["summary"]["post-cost"]["sharpe_ratio"])
+
+
+def test_repro_cli_runs_side_info_comparison_config_end_to_end(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    config = SideInfoComparisonConfig.from_yaml(SIDE_INFO_COMPARISON_CONFIG)
+    expected_id = comparison_id(config)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPRO_SCRIPT),
+            str(SIDE_INFO_COMPARISON_CONFIG),
+            "--runs-root",
+            str(runs_root),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    printed = Path(completed.stdout.strip())
+    assert printed == runs_root / expected_id
+    assert printed.is_dir()
+    summary = json.loads((printed / "summary.json").read_text())
+    assert summary["comparison_id"] == expected_id
+    assert summary["reproducible"] is True
+    assert set(summary["variants"]) == set(EXPECTED_VARIANTS)
 
 
 def test_repro_cli_warns_when_standalone_config_contains_hmm_only_fields(

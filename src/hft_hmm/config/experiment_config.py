@@ -22,6 +22,8 @@ import yaml
 
 from hft_hmm.core import EVALUATION_LAYER, PaperReference, reference
 from hft_hmm.experiments.walk_forward import WalkForwardConfig
+from hft_hmm.strategy import SignalPolicy
+from hft_hmm.strategy.signals import _VALID_SIGNAL_POLICIES
 
 __category__: Final[str] = EVALUATION_LAYER
 EXPERIMENT_CONFIG_REFERENCE: Final[PaperReference] = reference(
@@ -114,6 +116,8 @@ class ExperimentConfig:
     frequency: Frequency
     walk_forward: WalkForwardConfig
     cost_bps_per_turnover: float = 0.0
+    signal_policy: SignalPolicy = "sign"
+    signal_threshold: float = 0.0
     notes: str = ""
     sha256: str | None = None
 
@@ -144,6 +148,18 @@ class ExperimentConfig:
                 "cost_bps_per_turnover must be non-negative, "
                 f"got {self.cost_bps_per_turnover!r}."
             )
+        if self.signal_policy not in _VALID_SIGNAL_POLICIES:
+            raise ValueError(
+                f"signal_policy must be one of {_VALID_SIGNAL_POLICIES}, "
+                f"got {self.signal_policy!r}."
+            )
+        signal_threshold = float(self.signal_threshold)
+        if not math.isfinite(signal_threshold) or signal_threshold < 0.0:
+            raise ValueError(
+                "signal_threshold must be a finite non-negative float, "
+                f"got {self.signal_threshold!r}."
+            )
+        object.__setattr__(self, "signal_threshold", signal_threshold)
         if not isinstance(self.notes, str):
             raise TypeError(f"notes must be a str, got {type(self.notes).__name__}.")
         if self.data.is_reproducible:
@@ -179,6 +195,8 @@ class ExperimentConfig:
             "data": self.data.to_dict(),
             "frequency": self.frequency,
             "cost_bps_per_turnover": float(self.cost_bps_per_turnover),
+            "signal_policy": self.signal_policy,
+            "signal_threshold": float(self.signal_threshold),
             "walk_forward": {
                 "h_days": int(self.walk_forward.h_days),
                 "t_days": int(self.walk_forward.t_days),
@@ -220,6 +238,8 @@ class ExperimentConfig:
             frequency=data["frequency"],
             walk_forward=walk_forward,
             cost_bps_per_turnover=float(data.get("cost_bps_per_turnover", 0.0)),
+            signal_policy=data.get("signal_policy", "sign"),
+            signal_threshold=float(data.get("signal_threshold", 0.0)),
             notes=str(data.get("notes", "")),
             sha256=data.get("sha256"),
         )

@@ -151,7 +151,11 @@ def test_baseline_summary_matches_direct_walk_forward(comparison_artifacts) -> N
 
     returns = load_returns_from_source(cfg.data, frequency=cfg.frequency)
     direct = walk_forward(
-        returns, cfg.walk_forward, cost_bps_per_turnover=cfg.cost_bps_per_turnover
+        returns,
+        cfg.walk_forward,
+        cost_bps_per_turnover=cfg.cost_bps_per_turnover,
+        signal_policy=cfg.signal_policy,
+        signal_threshold=cfg.signal_threshold,
     )
 
     baseline_variant = comparison_artifacts.result.variants[BASELINE_VARIANT]
@@ -191,6 +195,8 @@ def test_force_overwrites_existing_directory(tmp_path: Path) -> None:
 def test_summary_includes_required_metric_fields(comparison_artifacts) -> None:
     payload = json.loads((comparison_artifacts.directory / "summary.json").read_text())
     assert payload["comparison_id"] == comparison_artifacts.comparison_id
+    assert "primary academic" in payload["metric_interpretation"]["pre-cost"]
+    assert "diagnostic" in payload["metric_interpretation"]["post-cost"]
     for variant in EXPECTED_VARIANTS:
         entry = payload["variants"][variant]
         assert entry["variant"] == variant
@@ -201,6 +207,16 @@ def test_summary_includes_required_metric_fields(comparison_artifacts) -> None:
         assert isinstance(entry["chosen_k_per_window"], list)
         assert all(isinstance(k, int) and k >= 2 for k in entry["chosen_k_per_window"])
         assert "start" in entry["sample_window"] and "end" in entry["sample_window"]
+        assert entry["daily_annualized_sharpe"]["trading_days_per_year"] == 258.0
+        assert "UTC date" in entry["daily_annualized_sharpe"]["method"]
+        assert np.isfinite(entry["daily_annualized_sharpe"]["pre-cost"])
+        assert np.isfinite(entry["daily_annualized_sharpe"]["post-cost"])
+        turnover = entry["turnover_diagnostics"]
+        assert turnover["total_turnover"] >= 0.0
+        assert turnover["mean_turnover_per_period"] >= 0.0
+        assert turnover["position_change_count"] >= 0
+        assert turnover["mean_holding_periods"] > 0.0
+        assert turnover["cost_drag_cumulative_return"] is not None
 
 
 def test_summary_payload_uses_aligned_return_sample_window(comparison_artifacts) -> None:
