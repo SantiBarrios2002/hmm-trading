@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -85,6 +86,7 @@ def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
     assert loaded.frequency == cfg.frequency
     assert loaded.walk_forward.h_days == cfg.walk_forward.h_days
     assert loaded.bucketed_transition.n_buckets == cfg.bucketed_transition.n_buckets
+    assert loaded.bucketed_transition.boundary_mode == cfg.bucketed_transition.boundary_mode
     assert loaded.vol_ratio.fast_window == cfg.vol_ratio.fast_window
     assert loaded.seasonality.bucket_minutes == cfg.seasonality.bucket_minutes
     assert loaded.spline.n_knots == cfg.spline.n_knots
@@ -180,7 +182,66 @@ def test_artifact_layout_is_written(comparison_artifacts) -> None:
     assert (directory / "summary.json").is_file()
     assert (directory / "figures").is_dir()
     for variant in EXPECTED_VARIANTS:
-        assert (directory / f"{variant}.log.jsonl").is_file()
+        log_path = directory / f"{variant}.log.jsonl"
+        assert log_path.is_file()
+        first_record = json.loads(log_path.read_text().splitlines()[0])
+        if variant != BASELINE_VARIANT:
+            assert first_record["boundary_mode"] == "grid"
+
+
+@pytest.mark.parametrize(
+    ("feature_shape", "expected_mode"),
+    [
+        ("unique", "quantile"),
+        ("duplicate_quantiles", "grid"),
+    ],
+)
+def test_quantile_boundary_mode_logs_effective_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_shape: str,
+    expected_mode: str,
+) -> None:
+    def fake_feature(
+        variant: str,
+        series: pd.Series,
+        config: SideInfoComparisonConfig,
+    ) -> pd.Series:
+        del variant, config
+        n_obs = len(series)
+        if feature_shape == "unique":
+            values = np.linspace(0.0, 1.0, n_obs)
+        else:
+            split = int(0.70 * n_obs)
+            values = np.concatenate(
+                [
+                    np.zeros(split),
+                    np.linspace(1.0, 2.0, n_obs - split),
+                ]
+            )
+        return pd.Series(values, index=series.index)
+
+    monkeypatch.setattr(side_info_module, "_build_feature", fake_feature)
+    cfg = replace(
+        _make_config(),
+        bucketed_transition=BucketedTransitionConfig(
+            n_buckets=4,
+            smoothing=1.0,
+            boundary_mode="quantile",
+        ),
+    )
+
+    artifacts = run_side_info_comparison(cfg, runs_root=tmp_path)
+
+    for variant in EXPECTED_VARIANTS:
+        records = [
+            json.loads(line)
+            for line in (artifacts.directory / f"{variant}.log.jsonl").read_text().splitlines()
+        ]
+        if variant == BASELINE_VARIANT:
+            assert all("boundary_mode" not in record for record in records)
+        else:
+            assert {record["boundary_mode"] for record in records} == {expected_mode}
 
 
 def test_force_overwrites_existing_directory(tmp_path: Path) -> None:
