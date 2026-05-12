@@ -1,9 +1,19 @@
 # GitHub Issues
 
-This file defines the actual work items for the repository. It complements `IMPLEMENTATION_PLAN.md`.
+> **Status (2026-05-12): frozen.** This file is a snapshot of the
+> replication-phase work plan (Issues 01–24 + 42). It is no longer the
+> source of truth for new work.
+>
+> Going forward — Gate K (HMC IOHMM) and Gate L (DMM benchmark) — the
+> GitHub issue body and PR description are the source of truth.
+> `IMPLEMENTATION_PLAN.md` records the acceptance contract; this file
+> is preserved for history only.
 
-- `IMPLEMENTATION_PLAN.md` = acceptance gates / review checks
-- `GITHUB_ISSUES.md` = implementation tasks / branch plan
+This file defined the actual work items for the repository during the
+replication phase. It complemented `IMPLEMENTATION_PLAN.md`.
+
+- `IMPLEMENTATION_PLAN.md` = acceptance gates / review checks (live)
+- `GITHUB_ISSUES.md` = implementation tasks / branch plan (frozen)
 
 Each issue below is intentionally PR-sized.
 

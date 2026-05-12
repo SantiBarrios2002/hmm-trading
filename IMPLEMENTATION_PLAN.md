@@ -52,16 +52,27 @@ The repo must support the course goal of simulating some results of the paper an
   - `docs/NN-short-name`
   - `fix/NN-short-name`
 
-### 2.5 Scope exclusions
+### 2.5 Scope exclusions and planned extensions
+
+#### Excluded by paper scope
 These parts of the original paper are intentionally out of scope for the
 coursework replication. They are listed here so the grader does not mistake
 their absence for oversight.
 
-- **MCMC parameter estimation.** The paper fits Θ by both Baum-Welch and Metropolis-Hastings. This repo uses only Baum-Welch.
-- **MCMC bridge sampling for model selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via MCMC bridge sampling. This repo uses only AIC/BIC.
+- **MCMC parameter estimation on Θ.** The paper fits Θ by both Baum-Welch and Metropolis-Hastings. This repo uses only Baum-Welch on the Gaussian HMM. For a diagonal-Gaussian HMM with K ∈ {2, 3, 4} on minute returns the likelihood is sharply concentrated, so MH and BW converge to essentially the same Θ — implementing MH adds days of compute for an answer within numerical noise of `hmmlearn`'s EM fit.
+- **MCMC bridge sampling for K selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via bridge sampling. This repo uses only AIC/BIC. Bridge sampling would close the §4 selection trio formally but is unlikely to yield a different K than CV would.
 - **Asynchronous IOHMM.** The paper sketches an asynchronous variant for mixed-frequency inputs. This repo implements only the synchronous IOHMM approximation.
 - **Multi-security / portfolio backtest.** Evaluation is single-security (ES or an equivalent proxy). No cross-asset construction.
 - **Production execution concerns.** No latency modeling, slippage beyond a flat cost-per-turnover, venue microstructure, or order-book effects.
+
+#### Planned extensions beyond paper scope
+These are not in the paper but extend the replication along directions the
+syllabus invites (state-space ladder: HMM → Kalman / PF → DMM; EM vs. MCMC
+parameter inference). They are tracked under Gates K and L below and are
+*not* required for Gates A–J to pass.
+
+- **HMC on continuous-parametric IOHMM transitions (Gate K).** Replaces the bucketed approximation in §8 (`paper_pipeline_walkthrough.md`) with `A(x_t) = softmax(W x_t + b)` fit via NUTS in NumPyro or PyMC. Closes the bucketed-vs-continuous gap *and* delivers the Tema 2 / MCMC contribution. Distinct from "MCMC on Θ" (excluded above): HMC here samples the *transition function*, not the Gaussian HMM parameters.
+- **Deep Markov Model benchmark (Gate L).** Pyro-based DMM (Krishnan et al. 2017, paper PDF in `docs/`) as the nonlinear-state-space generalization of the HMM. Trained with variational inference (its native algorithm), compared against the HMM / IOHMM / HMC IOHMM variants on the same walk-forward rig.
 
 ---
 
@@ -296,6 +307,49 @@ The goal of this gate is not to reproduce the paper's numbers exactly, but to sh
 
 ---
 
+## Gate K — HMC on continuous-parametric IOHMM transitions (extension)
+**Covers:** §2.5 planned extension. Issue and branch to be opened when work starts (suggested: `feat/NN-hmc-iohmm`).
+
+This gate is the MCMC half of the planned extensions. It is *not* required
+for Gates A–J to pass; it is the contribution that converts the bucketed
+§8 engineering approximation into the paper's continuous-parametric form
+and supplies the Tema 2 MCMC piece of the syllabus.
+
+### Must pass
+- A NumPyro or PyMC model fits the transition function `A(x_t) = softmax(W x_t + b)` with discrete HMM states marginalized in the forward filter.
+- NUTS (or HMC) is used; chain count, warmup, and adaptation settings are recorded in the run artifact.
+- The HMC IOHMM is registered as an additional variant alongside the existing bucketed-grid and bucketed-quantile variants, producing a three-way ablation (grid / quantile / HMC continuous) that isolates bucket-placement effects from continuous-conditioning effects.
+- Posterior diagnostics (R-hat for each parameter, ESS per chain) are stored per window in the run artifact and clearly flagged when convergence is poor.
+- A short note in the module docstring distinguishes "HMC on transition logits" (this gate) from "MCMC on Θ" (explicitly excluded by §2.5).
+
+### Evidence expected in PR review
+- Convergence-diagnostic summary across walk-forward windows
+- Three-way ablation table (grid / quantile / HMC) on the same fixture
+- A run artifact under `runs/<run_id>/` reproducible via `scripts/repro.py`
+
+---
+
+## Gate L — Deep Markov Model benchmark (extension)
+**Covers:** §2.5 planned extension. Issue and branch to be opened when work starts (suggested: `feat/NN-dmm-benchmark`).
+
+This gate is the deep-learning half of the planned extensions, positioned
+as the nonlinear-state-space generalization of the HMM. It is *not*
+required for Gates A–J to pass.
+
+### Must pass
+- A Pyro-based DMM (Krishnan et al. 2017 — paper PDF in `docs/`) wraps emission MLP, transition MLP gated on side information, and a structured inference network.
+- The model exposes a `predict_next_return` API and is registered as a variant in the side-information comparison.
+- Walk-forward integration uses the same data loaders and evaluation layer as the HMM variants; any sampling-frequency change (e.g., 5-min training to keep compute tractable) is documented and recorded in the config.
+- Training settings (epochs, batch size, optimizer, KL annealing schedule) are recorded in the run artifact for reproducibility.
+- A negative-result discussion is acceptable and expected — if DMM does not beat the HMM on Sharpe, the result is reported alongside the conviction-weighted negative-result precedent.
+
+### Evidence expected in PR review
+- Reproducibility check: rerun via `scripts/repro.py` yields the same metrics within documented stochastic tolerance
+- Comparison table including HMM / IOHMM (grid + quantile) / HMC IOHMM (if Gate K landed) / DMM
+- One figure showing latent-state trajectories or filtered-state probabilities under the DMM
+
+---
+
 ## 4. Definition of done for the project
 
 The project is ready for academic submission when:
@@ -307,6 +361,11 @@ The project is ready for academic submission when:
 - Gate J produces at least one reproduced directional claim from the paper, with an honest gap analysis
 
 A strong project should pass all gates except perhaps the "full IOHMM" variant, which is optional.
+
+Gates K and L are **extensions beyond the paper scope** and are not required
+for academic submission. They strengthen the defense — Gate K supplies the
+Tema 2 MCMC contribution and Gate L positions the project on the
+state-space ladder — but the project is submittable without them.
 
 ---
 
@@ -324,5 +383,7 @@ Recommended order for merging PRs:
 8. Gate H
 9. Gate I
 10. Gate J
+11. Gate K *(extension)*
+12. Gate L *(extension)*
 
 This keeps the repo academically coherent and easy to review.
