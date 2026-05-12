@@ -1,0 +1,48 @@
+bucketed_transition:
+  boundary_mode: quantile
+  grid_size: 200
+  n_buckets: 3
+  smoothing: 1.0
+# Cost is a conservative post-cost diagnostic only. The paper comparison uses
+# pre-cost daily Sharpe; see docs/results_vs_paper.md.
+cost_bps_per_turnover: 1.0
+data:
+  end: null
+  kind: databento_parquet
+  path: data/databento/databento/ES_c_0_ohlcv-1m_2019-01-01_2024-12-31.parquet
+  start: null
+  symbol: ES.c.0
+frequency: 1min
+notes: Quantile-mode counterpart to example_es_databento_side_info_comparison.yaml.
+  Identical config except bucketed_transition.boundary_mode = quantile, so per-window
+  bucket boundaries are placed at empirical quantiles of the training side-information
+  rather than the spline evaluation grid. Used to isolate the bucket-placement effect
+  before the planned HMC IOHMM extension.
+seasonality:
+  bucket_minutes: 1
+  exchange_tz: America/Chicago
+  normalize: true
+sha256: 519bc22f1db8f88e254db4c39c23657caa22709c45c6571d3dfc536d2d9731f7
+signal_policy: sign
+signal_threshold: 0.0
+spline:
+  degree: 3
+  demean: false
+  demean_grid_size: 1000
+  min_obs: 20
+  n_knots: 5
+vol_ratio:
+  decay: 0.79
+  fast_window: 50
+  slow_window: 100
+walk_forward:
+  h_days: 23
+  k_values:
+  - 2
+  min_variance: 1.0e-08
+  n_iter: 100
+  random_state: 0
+  retrain_every_days: 20
+  t_days: 20
+  tol: 0.0001
+  variance_floor_policy: clamp
