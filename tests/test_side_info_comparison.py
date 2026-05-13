@@ -19,6 +19,10 @@ from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.experiments.side_info_comparison import (
     BASELINE_VARIANT,
     EXPECTED_VARIANTS,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    SEASONALITY_VARIANT,
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+    VOLATILITY_RATIO_VARIANT,
     SideInfoComparisonConfig,
     comparison_id,
     run_side_info_comparison,
@@ -29,6 +33,7 @@ from hft_hmm.features.splines import SplinePredictorConfig
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult
 from hft_hmm.models.iohmm_approx import BucketedTransitionConfig, BucketedTransitionResult
+from hft_hmm.models.iohmm_continuous import ContinuousIOHMMConfig
 
 side_info_module = importlib.import_module("hft_hmm.experiments.side_info_comparison")
 
@@ -36,6 +41,15 @@ REPO_ROOT = Path(__file__).parent.parent
 FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
 FIXTURE_SHA256 = "c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_side_info_comparison.yaml"
+EXAMPLE_HMC_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_hmc.yaml"
+HMC_VARIANTS = {
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
+}
+BUCKETED_VARIANTS = {
+    VOLATILITY_RATIO_VARIANT,
+    SEASONALITY_VARIANT,
+}
 
 
 def _make_config(*, fixture_path: str = str(FIXTURE_CSV)) -> SideInfoComparisonConfig:
@@ -44,8 +58,8 @@ def _make_config(*, fixture_path: str = str(FIXTURE_CSV)) -> SideInfoComparisonC
         frequency="1min",
         walk_forward=WalkForwardConfig(
             h_days=10,
-            t_days=2,
-            retrain_every_days=2,
+            t_days=5,
+            retrain_every_days=5,
             k_values=(2,),
             random_state=0,
             n_iter=100,
@@ -55,6 +69,13 @@ def _make_config(*, fixture_path: str = str(FIXTURE_CSV)) -> SideInfoComparisonC
         ),
         spline=SplinePredictorConfig(n_knots=5, min_obs=20),
         bucketed_transition=BucketedTransitionConfig(n_buckets=3, smoothing=1.0),
+        continuous_iohmm=ContinuousIOHMMConfig(
+            num_warmup=5,
+            num_samples=8,
+            seed=0,
+            rhat_threshold=10.0,
+            ess_bulk_threshold=1,
+        ),
         vol_ratio=VolatilityRatioConfig(fast_window=50, slow_window=100),
         seasonality=SeasonalityConfig(bucket_minutes=1, exchange_tz="America/Chicago"),
         cost_bps_per_turnover=1.0,
@@ -87,6 +108,8 @@ def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
     assert loaded.walk_forward.h_days == cfg.walk_forward.h_days
     assert loaded.bucketed_transition.n_buckets == cfg.bucketed_transition.n_buckets
     assert loaded.bucketed_transition.boundary_mode == cfg.bucketed_transition.boundary_mode
+    assert loaded.continuous_iohmm.num_samples == cfg.continuous_iohmm.num_samples
+    assert SideInfoComparisonConfig.from_dict(loaded.to_dict()) == loaded
     assert loaded.vol_ratio.fast_window == cfg.vol_ratio.fast_window
     assert loaded.seasonality.bucket_minutes == cfg.seasonality.bucket_minutes
     assert loaded.spline.n_knots == cfg.spline.n_knots
@@ -100,6 +123,17 @@ def test_example_config_loads() -> None:
     assert cfg.frequency == "1min"
     assert cfg.sha256 == FIXTURE_SHA256
     assert cfg.walk_forward.k_values == (2,)
+    assert cfg.continuous_iohmm.num_samples == 12
+
+
+def test_hmc_example_config_round_trips() -> None:
+    cfg = SideInfoComparisonConfig.from_yaml(EXAMPLE_HMC_CONFIG)
+    raw = cfg.to_dict()
+
+    assert "continuous_iohmm" in raw
+    assert cfg.continuous_iohmm.num_chains == 2
+    assert cfg.continuous_iohmm.num_samples == 1000
+    assert SideInfoComparisonConfig.from_dict(raw) == cfg
 
 
 def test_config_rejects_invalid_subconfigs() -> None:
@@ -113,6 +147,8 @@ def test_config_rejects_invalid_subconfigs() -> None:
         SideInfoComparisonConfig(**base, bucketed_transition={"n_buckets": 3})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="spline"):
         SideInfoComparisonConfig(**base, spline={"n_knots": 5})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="continuous_iohmm"):
+        SideInfoComparisonConfig(**base, continuous_iohmm={"num_samples": 8})  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -120,10 +156,10 @@ def test_config_rejects_invalid_subconfigs() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def comparison_artifacts(tmp_path: Path):
+@pytest.fixture(scope="module")
+def comparison_artifacts(tmp_path_factory):
     cfg = _make_config()
-    return run_side_info_comparison(cfg, runs_root=tmp_path)
+    return run_side_info_comparison(cfg, runs_root=tmp_path_factory.mktemp("side-info-runs"))
 
 
 def test_runner_produces_all_expected_variants(comparison_artifacts) -> None:
@@ -185,8 +221,12 @@ def test_artifact_layout_is_written(comparison_artifacts) -> None:
         log_path = directory / f"{variant}.log.jsonl"
         assert log_path.is_file()
         first_record = json.loads(log_path.read_text().splitlines()[0])
-        if variant != BASELINE_VARIANT:
+        if variant in BUCKETED_VARIANTS:
             assert first_record["boundary_mode"] == "grid"
+        elif variant in HMC_VARIANTS:
+            assert "converged" in first_record
+            assert "rhat_max" in first_record
+            assert "ess_bulk_min" in first_record
 
 
 @pytest.mark.parametrize(
@@ -212,7 +252,14 @@ def test_quantile_boundary_mode_logs_effective_mode(
         if feature_shape == "unique":
             values = np.linspace(0.0, 1.0, n_obs)
         else:
-            split = int(0.70 * n_obs)
+            # 60% concentration at zero forces duplicate interior quantiles for
+            # the n_buckets=4 quantile mode (q25 and q50 both fall in the zero
+            # mass), driving the per-window fallback to grid. Smaller training
+            # windows under module-scoped fixtures need this tighter ratio than
+            # the 0.70 used historically — the module-scoped runner exposes a
+            # narrower spread of window sizes, and 0.70 no longer triggered
+            # the duplicate-quantile path on every window.
+            split = int(0.60 * n_obs)
             values = np.concatenate(
                 [
                     np.zeros(split),
@@ -238,10 +285,59 @@ def test_quantile_boundary_mode_logs_effective_mode(
             json.loads(line)
             for line in (artifacts.directory / f"{variant}.log.jsonl").read_text().splitlines()
         ]
-        if variant == BASELINE_VARIANT:
+        if variant == BASELINE_VARIANT or variant in HMC_VARIANTS:
             assert all("boundary_mode" not in record for record in records)
         else:
             assert {record["boundary_mode"] for record in records} == {expected_mode}
+
+
+def test_hmc_variant_logs_diagnostics_without_bucket_fields(comparison_artifacts) -> None:
+    for variant in HMC_VARIANTS:
+        records = [
+            json.loads(line)
+            for line in (comparison_artifacts.directory / f"{variant}.log.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert records
+        for record in records:
+            assert isinstance(record["converged"], bool)
+            assert np.isfinite(record["rhat_max"])
+            assert isinstance(record["ess_bulk_min"], int)
+            assert isinstance(record["posterior_mean_W"], list)
+            assert isinstance(record["posterior_mean_b"], list)
+            assert "bucket_observation_counts" not in record
+            assert "boundary_mode" not in record
+
+
+def test_hmc_variant_persists_posterior_samples_npz(comparison_artifacts) -> None:
+    for variant in HMC_VARIANTS:
+        posterior_dir = comparison_artifacts.directory / f"{variant}.posterior"
+        assert posterior_dir.is_dir(), f"missing posterior dir for {variant}"
+        npz_files = sorted(posterior_dir.glob("window_*.npz"))
+        assert npz_files, f"no per-window posterior npz files for {variant}"
+        log_records = [
+            json.loads(line)
+            for line in (comparison_artifacts.directory / f"{variant}.log.jsonl")
+            .read_text()
+            .splitlines()
+        ]
+        assert len(npz_files) == len(log_records)
+        for path in npz_files:
+            with np.load(path) as data:
+                w = data["W"]
+                b = data["b"]
+            assert w.ndim == 4 and w.shape[2] == w.shape[3] >= 2
+            assert b.shape == w.shape
+            assert np.all(np.isfinite(w))
+            assert np.all(np.isfinite(b))
+
+
+def test_non_hmc_variants_skip_posterior_dir(comparison_artifacts) -> None:
+    for variant in EXPECTED_VARIANTS:
+        if variant in HMC_VARIANTS:
+            continue
+        assert not (comparison_artifacts.directory / f"{variant}.posterior").exists()
 
 
 def test_force_overwrites_existing_directory(tmp_path: Path) -> None:

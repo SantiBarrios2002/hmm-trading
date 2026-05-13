@@ -2,6 +2,14 @@ bucketed_transition:
   grid_size: 200
   n_buckets: 3
   smoothing: 1.0
+continuous_iohmm:
+  ess_bulk_threshold: 1
+  num_chains: 2
+  num_samples: 12
+  num_warmup: 10
+  rhat_threshold: 10.0
+  seed: 0
+  target_accept_prob: 0.8
 # Cost is a post-cost diagnostic only. Paper-style model comparison should use
 # pre-cost Sharpe unless an execution model is explicitly specified.
 cost_bps_per_turnover: 1.0
@@ -12,9 +20,10 @@ data:
   start: null
   symbol: null
 frequency: 1min
-notes: Gate H side-information comparison on January 2024 ES CSV fixture; baseline
-  vs volatility-ratio and intraday-seasonality IOHMM-style conditioning via the
-  Issue 16 bucketed transition approximation.
+notes: Gate H/K side-information comparison on January 2024 ES CSV fixture; baseline
+  vs bucketed and HMC continuous volatility-ratio and intraday-seasonality
+  IOHMM-style conditioning. HMC settings are intentionally tiny for a fast
+  example run, not for posterior-quality reporting.
 seasonality:
   bucket_minutes: 1
   exchange_tz: America/Chicago
@@ -37,7 +46,7 @@ walk_forward:
   min_variance: 1.0e-08
   n_iter: 100
   random_state: 0
-  retrain_every_days: 2
-  t_days: 2
+  retrain_every_days: 5
+  t_days: 5
   tol: 0.0001
   variance_floor_policy: clamp

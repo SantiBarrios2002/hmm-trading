@@ -8,6 +8,12 @@ from hft_hmm.models.iohmm_approx import (
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
+from hft_hmm.models.iohmm_continuous import (
+    ContinuousIOHMMConfig,
+    ContinuousIOHMMResult,
+    fit_continuous_iohmm,
+    transition_probabilities_at,
+)
 from hft_hmm.models.plr_baseline import (
     PLRBaselineResult,
     PLRSegment,
@@ -15,11 +21,13 @@ from hft_hmm.models.plr_baseline import (
     fit_piecewise_linear_regression,
 )
 
-from . import gaussian_hmm, iohmm_approx, plr_baseline
+from . import gaussian_hmm, iohmm_approx, iohmm_continuous, plr_baseline
 
 __all__ = [
     "BucketedTransitionConfig",
     "BucketedTransitionResult",
+    "ContinuousIOHMMConfig",
+    "ContinuousIOHMMResult",
     "GaussianHMMResult",
     "GaussianHMMWrapper",
     "PLRBaselineResult",
@@ -27,9 +35,12 @@ __all__ = [
     "PLRStateSummary",
     "bucket_boundaries_from_quantiles",
     "bucket_boundaries_from_spline_grid",
+    "fit_continuous_iohmm",
     "fit_bucketed_transition_model",
     "fit_piecewise_linear_regression",
     "gaussian_hmm",
     "iohmm_approx",
+    "iohmm_continuous",
     "plr_baseline",
+    "transition_probabilities_at",
 ]

@@ -1,6 +1,6 @@
-"""Gate H side-information comparison experiment.
+"""Gate H/K side-information comparison experiment.
 
-Runs three walk-forward variants on the same return series with the same
+Runs five walk-forward variants on the same return series with the same
 window geometry, K selection, cost model, and reporting units, so the
 variants are directly comparable on pre-cost signal quality:
 
@@ -12,6 +12,10 @@ variants are directly comparable on pre-cost signal quality:
    approximation conditioned on the volatility-ratio side information.
 3. ``seasonality_conditioned`` — same as above with the intraday seasonality
    feature.
+4. ``volatility_ratio_hmc_continuous`` and
+   ``seasonality_hmc_continuous`` — Gate K continuous-parametric IOHMM
+   transition functions, fit per window with NumPyro NUTS on decoded training
+   states while holding Baum-Welch emissions fixed.
 
 The IOHMM-style conditioning is the engineering approximation from
 ``hft_hmm.models.iohmm_approx``: a bucket index is derived from the
@@ -88,6 +92,12 @@ from hft_hmm.models.iohmm_approx import (
     bucket_boundaries_from_spline_grid,
     fit_bucketed_transition_model,
 )
+from hft_hmm.models.iohmm_continuous import (
+    ContinuousIOHMMConfig,
+    ContinuousIOHMMResult,
+    fit_continuous_iohmm,
+    transition_probabilities_at,
+)
 from hft_hmm.strategy import (
     SignalPolicy,
     align_signal_with_future_return,
@@ -109,10 +119,24 @@ _SHA256_HEX_LENGTH: Final[int] = 64
 BASELINE_VARIANT: Final[str] = "baseline"
 VOLATILITY_RATIO_VARIANT: Final[str] = "volatility_ratio_conditioned"
 SEASONALITY_VARIANT: Final[str] = "seasonality_conditioned"
+VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: Final[str] = "volatility_ratio_hmc_continuous"
+SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "seasonality_hmc_continuous"
 EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     BASELINE_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     SEASONALITY_VARIANT,
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
+)
+_SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
+    VOLATILITY_RATIO_VARIANT,
+    SEASONALITY_VARIANT,
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
+)
+_HMC_CONTINUOUS_VARIANTS: Final[tuple[str, ...]] = (
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
 )
 
 
@@ -139,6 +163,7 @@ class SideInfoComparisonConfig:
     walk_forward: WalkForwardConfig
     spline: SplinePredictorConfig = field(default_factory=SplinePredictorConfig)
     bucketed_transition: BucketedTransitionConfig = field(default_factory=BucketedTransitionConfig)
+    continuous_iohmm: ContinuousIOHMMConfig = field(default_factory=ContinuousIOHMMConfig)
     vol_ratio: VolatilityRatioConfig = field(default_factory=VolatilityRatioConfig)
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
     cost_bps_per_turnover: float = 0.0
@@ -167,6 +192,11 @@ class SideInfoComparisonConfig:
             raise TypeError(
                 "bucketed_transition must be a BucketedTransitionConfig, "
                 f"got {type(self.bucketed_transition).__name__}."
+            )
+        if not isinstance(self.continuous_iohmm, ContinuousIOHMMConfig):
+            raise TypeError(
+                "continuous_iohmm must be a ContinuousIOHMMConfig, "
+                f"got {type(self.continuous_iohmm).__name__}."
             )
         if not isinstance(self.vol_ratio, VolatilityRatioConfig):
             raise TypeError(
@@ -231,6 +261,15 @@ class SideInfoComparisonConfig:
                 "grid_size": int(self.bucketed_transition.grid_size),
                 "n_buckets": int(self.bucketed_transition.n_buckets),
                 "smoothing": float(self.bucketed_transition.smoothing),
+            },
+            "continuous_iohmm": {
+                "ess_bulk_threshold": int(self.continuous_iohmm.ess_bulk_threshold),
+                "num_chains": int(self.continuous_iohmm.num_chains),
+                "num_samples": int(self.continuous_iohmm.num_samples),
+                "num_warmup": int(self.continuous_iohmm.num_warmup),
+                "rhat_threshold": float(self.continuous_iohmm.rhat_threshold),
+                "seed": int(self.continuous_iohmm.seed),
+                "target_accept_prob": float(self.continuous_iohmm.target_accept_prob),
             },
             "cost_bps_per_turnover": float(self.cost_bps_per_turnover),
             "data": self.data.to_dict(),
@@ -308,6 +347,16 @@ class SideInfoComparisonConfig:
             grid_size=int(bt_raw.get("grid_size", 200)),
             boundary_mode=bt_raw.get("boundary_mode", "grid"),
         )
+        ci_raw = raw.get("continuous_iohmm", {})
+        continuous_iohmm = ContinuousIOHMMConfig(
+            num_chains=int(ci_raw.get("num_chains", 2)),
+            num_warmup=int(ci_raw.get("num_warmup", 500)),
+            num_samples=int(ci_raw.get("num_samples", 1000)),
+            target_accept_prob=float(ci_raw.get("target_accept_prob", 0.8)),
+            seed=int(ci_raw.get("seed", 0)),
+            rhat_threshold=float(ci_raw.get("rhat_threshold", 1.05)),
+            ess_bulk_threshold=int(ci_raw.get("ess_bulk_threshold", 200)),
+        )
         vr_raw = raw.get("vol_ratio", {})
         vol_ratio_cfg = VolatilityRatioConfig(
             decay=float(vr_raw.get("decay", 0.79)),
@@ -326,6 +375,7 @@ class SideInfoComparisonConfig:
             walk_forward=walk_forward_cfg,
             spline=spline,
             bucketed_transition=bucketed,
+            continuous_iohmm=continuous_iohmm,
             vol_ratio=vol_ratio_cfg,
             seasonality=seasonality_cfg,
             cost_bps_per_turnover=float(raw.get("cost_bps_per_turnover", 0.0)),
@@ -411,12 +461,122 @@ class SideInfoVariantWindow:
 
 
 @dataclass(frozen=True)
+class ContinuousSideInfoVariantWindow:
+    """Per-window record for a continuous-parametric HMC side-information variant."""
+
+    index: int
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+    forecast_start: pd.Timestamp
+    forecast_end: pd.Timestamp
+    chosen_k: int
+    n_train_obs: int
+    n_forecast_obs: int
+    converged: bool
+    rhat_max: float
+    ess_bulk_min: int
+    posterior_mean_W: np.ndarray
+    posterior_mean_b: np.ndarray
+    posterior_samples: dict[str, np.ndarray]
+    summary: pd.DataFrame
+
+    def __post_init__(self) -> None:
+        if self.index < 0:
+            raise ValueError(f"index must be non-negative, got {self.index}.")
+        if self.chosen_k < 2:
+            raise ValueError(f"chosen_k must be >= 2, got {self.chosen_k}.")
+        if self.n_train_obs < 1:
+            raise ValueError(f"n_train_obs must be >= 1, got {self.n_train_obs}.")
+        if self.n_forecast_obs < 2:
+            raise ValueError(
+                f"n_forecast_obs must be >= 2 to align signals; got {self.n_forecast_obs}."
+            )
+        if self.train_end < self.train_start:
+            raise ValueError("train_end must not precede train_start.")
+        if self.forecast_end < self.forecast_start:
+            raise ValueError("forecast_end must not precede forecast_start.")
+        if self.forecast_start <= self.train_end:
+            raise ValueError(
+                "forecast_start must be strictly after train_end; "
+                f"got train_end={self.train_end} forecast_start={self.forecast_start}."
+            )
+        rhat_max = float(self.rhat_max)
+        if not math.isfinite(rhat_max) or rhat_max < 0.0:
+            raise ValueError(f"rhat_max must be finite and non-negative, got {rhat_max!r}.")
+        if not isinstance(self.ess_bulk_min, int) or isinstance(self.ess_bulk_min, bool):
+            raise TypeError(
+                f"ess_bulk_min must be an integer, got {type(self.ess_bulk_min).__name__}."
+            )
+        if self.ess_bulk_min < 0:
+            raise ValueError(f"ess_bulk_min must be non-negative, got {self.ess_bulk_min}.")
+
+        mean_w = np.asarray(self.posterior_mean_W, dtype=float).copy()
+        mean_b = np.asarray(self.posterior_mean_b, dtype=float).copy()
+        for attr_name, values in (
+            ("posterior_mean_W", mean_w),
+            ("posterior_mean_b", mean_b),
+        ):
+            if values.shape != (self.chosen_k, self.chosen_k):
+                raise ValueError(
+                    f"{attr_name} must have shape ({self.chosen_k}, {self.chosen_k}), "
+                    f"got {values.shape}."
+                )
+            if not np.all(np.isfinite(values)):
+                raise ValueError(f"{attr_name} must contain only finite values.")
+            values.setflags(write=False)
+
+        if not isinstance(self.posterior_samples, dict):
+            raise TypeError(
+                "posterior_samples must be a dict of parameter samples, "
+                f"got {type(self.posterior_samples).__name__}."
+            )
+        missing = {"W", "b"} - set(self.posterior_samples)
+        if missing:
+            raise ValueError(f"posterior_samples is missing keys {sorted(missing)!r}.")
+        frozen_samples: dict[str, np.ndarray] = {}
+        sample_shape: tuple[int, ...] | None = None
+        for param_name in ("W", "b"):
+            arr = np.asarray(self.posterior_samples[param_name], dtype=float).copy()
+            if arr.ndim != 4:
+                raise ValueError(
+                    f"posterior_samples[{param_name!r}] must be 4-D "
+                    "(chains, samples, K, K); "
+                    f"got shape {arr.shape}."
+                )
+            if arr.shape[2] != self.chosen_k or arr.shape[3] != self.chosen_k:
+                raise ValueError(
+                    f"posterior_samples[{param_name!r}] trailing shape must be "
+                    f"({self.chosen_k}, {self.chosen_k}); got {arr.shape}."
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(f"posterior_samples[{param_name!r}] must be finite.")
+            if sample_shape is None:
+                sample_shape = arr.shape
+            elif arr.shape != sample_shape:
+                raise ValueError(
+                    "posterior_samples['W'] and posterior_samples['b'] must have "
+                    f"the same shape; got {sample_shape} and {arr.shape}."
+                )
+            arr.setflags(write=False)
+            frozen_samples[param_name] = arr
+
+        if not isinstance(self.summary, pd.DataFrame):
+            raise TypeError("summary must be a pd.DataFrame.")
+
+        object.__setattr__(self, "converged", bool(self.converged))
+        object.__setattr__(self, "rhat_max", rhat_max)
+        object.__setattr__(self, "posterior_mean_W", mean_w)
+        object.__setattr__(self, "posterior_mean_b", mean_b)
+        object.__setattr__(self, "posterior_samples", frozen_samples)
+
+
+@dataclass(frozen=True)
 class SideInfoVariantResult:
     """Per-variant result of a side-information comparison."""
 
     variant: str
     chosen_k_per_window: tuple[int, ...]
-    windows: tuple[SideInfoVariantWindow, ...] | tuple[WalkForwardWindow, ...]
+    windows: tuple[SideInfoVariantWindow | ContinuousSideInfoVariantWindow | WalkForwardWindow, ...]
     signal: pd.Series
     pre_cost_returns: pd.Series
     post_cost_returns: pd.Series
@@ -521,6 +681,18 @@ def run_side_info_comparison(
         config=config,
         baseline_windows=baseline_wf.windows,
     )
+    vol_hmc_variant = _run_side_info_variant(
+        VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+        returns=returns,
+        config=config,
+        baseline_windows=baseline_wf.windows,
+    )
+    seasonality_hmc_variant = _run_side_info_variant(
+        SEASONALITY_HMC_CONTINUOUS_VARIANT,
+        returns=returns,
+        config=config,
+        baseline_windows=baseline_wf.windows,
+    )
 
     result = SideInfoComparisonResult(
         config=config,
@@ -529,6 +701,8 @@ def run_side_info_comparison(
             BASELINE_VARIANT: baseline_variant,
             VOLATILITY_RATIO_VARIANT: vol_variant,
             SEASONALITY_VARIANT: seasonality_variant,
+            VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: vol_hmc_variant,
+            SEASONALITY_HMC_CONTINUOUS_VARIANT: seasonality_hmc_variant,
         },
     )
 
@@ -595,14 +769,14 @@ def _run_side_info_variant(
     baseline_windows: tuple[WalkForwardWindow, ...],
 ) -> SideInfoVariantResult:
     """Run one side-information variant on the same windows as the baseline."""
-    if variant not in (VOLATILITY_RATIO_VARIANT, SEASONALITY_VARIANT):
+    if variant not in _SIDE_INFO_VARIANTS:
         raise ValueError(f"unsupported variant {variant!r}.")
 
     cost = config.cost_bps_per_turnover
     wf = config.walk_forward
     bar_dates = returns.index.date
 
-    windows: list[SideInfoVariantWindow] = []
+    windows: list[SideInfoVariantWindow | ContinuousSideInfoVariantWindow] = []
     signal_parts: list[pd.Series] = []
     pre_cost_parts: list[pd.Series] = []
     post_cost_parts: list[pd.Series] = []
@@ -652,46 +826,74 @@ def _run_side_info_variant(
                 f"variant {variant!r} window {baseline_window.index} has fewer than 2 "
                 "finite training feature observations after dropping the NaN prefix."
             )
-        spline_result = fit_spline_predictor(feature_train, train_slice, config=config.spline)
-        boundaries, boundary_mode = _bucket_boundaries_for_mode(
-            spline_result=spline_result,
-            training_values=feature_train_clean.to_numpy(),
-            config=config.bucketed_transition,
-        )
-        bucketed_config = config.bucketed_transition
-        if boundary_mode != bucketed_config.boundary_mode:
-            bucketed_config = replace(bucketed_config, boundary_mode=boundary_mode)
         nonnan_mask = feature_train.notna().to_numpy()
         decoded_aligned = decoded[nonnan_mask]
-
-        bucketed = fit_bucketed_transition_model(
-            state_sequence=decoded_aligned,
-            side_information=feature_train_clean.to_numpy(),
-            n_states=chosen_k,
-            baseline_transition_matrix=fitted.transition_matrix,
-            bucket_boundaries=boundaries,
-            config=bucketed_config,
-        )
-
         posterior_at_train_end = _terminal_training_posterior(train_slice, fitted)
-        expected = _dynamic_forward_expected_returns(
-            forecast_returns=effective_forecast.to_numpy(),
-            forecast_features=feature_forecast.to_numpy(),
-            fitted=fitted,
-            bucketed=bucketed,
-            initial_state_distribution=posterior_at_train_end,
-        )
+
+        bucketed: BucketedTransitionResult | None = None
+        continuous: ContinuousIOHMMResult | None = None
+        boundary_mode: BoundaryMode | None = None
+        if variant in _HMC_CONTINUOUS_VARIANTS:
+            continuous = fit_continuous_iohmm(
+                state_sequence=decoded_aligned,
+                side_information=feature_train_clean.to_numpy(),
+                n_states=chosen_k,
+                config=config.continuous_iohmm,
+            )
+            expected = _dynamic_forward_expected_returns_continuous(
+                forecast_returns=effective_forecast.to_numpy(),
+                forecast_features=feature_forecast.to_numpy(),
+                fitted=fitted,
+                continuous=continuous,
+                initial_state_distribution=posterior_at_train_end,
+            )
+        else:
+            spline_result = fit_spline_predictor(feature_train, train_slice, config=config.spline)
+            boundaries, boundary_mode = _bucket_boundaries_for_mode(
+                spline_result=spline_result,
+                training_values=feature_train_clean.to_numpy(),
+                config=config.bucketed_transition,
+            )
+            bucketed_config = config.bucketed_transition
+            if boundary_mode != bucketed_config.boundary_mode:
+                bucketed_config = replace(bucketed_config, boundary_mode=boundary_mode)
+
+            bucketed = fit_bucketed_transition_model(
+                state_sequence=decoded_aligned,
+                side_information=feature_train_clean.to_numpy(),
+                n_states=chosen_k,
+                baseline_transition_matrix=fitted.transition_matrix,
+                bucket_boundaries=boundaries,
+                config=bucketed_config,
+            )
+            expected = _dynamic_forward_expected_returns(
+                forecast_returns=effective_forecast.to_numpy(),
+                forecast_features=feature_forecast.to_numpy(),
+                fitted=fitted,
+                bucketed=bucketed,
+                initial_state_distribution=posterior_at_train_end,
+            )
         expected_series = pd.Series(expected, index=effective_forecast.index)
 
         signal_scale: float | None = None
         if config.signal_policy == "conviction_weighted":
-            train_expected = _dynamic_forward_expected_returns(
-                forecast_returns=train_slice.loc[feature_train_clean.index].to_numpy(),
-                forecast_features=feature_train_clean.to_numpy(),
-                fitted=fitted,
-                bucketed=bucketed,
-                initial_state_distribution=fitted.initial_distribution,
-            )
+            if continuous is not None:
+                train_expected = _dynamic_forward_expected_returns_continuous(
+                    forecast_returns=train_slice.loc[feature_train_clean.index].to_numpy(),
+                    forecast_features=feature_train_clean.to_numpy(),
+                    fitted=fitted,
+                    continuous=continuous,
+                    initial_state_distribution=fitted.initial_distribution,
+                )
+            else:
+                assert bucketed is not None
+                train_expected = _dynamic_forward_expected_returns(
+                    forecast_returns=train_slice.loc[feature_train_clean.index].to_numpy(),
+                    forecast_features=feature_train_clean.to_numpy(),
+                    fitted=fitted,
+                    bucketed=bucketed,
+                    initial_state_distribution=fitted.initial_distribution,
+                )
             signal_scale = conviction_scale_from_train_predictions(train_expected)
 
         window_signal = build_signal(
@@ -717,21 +919,46 @@ def _run_side_info_variant(
         pre_cost_parts.append(window_pre_cost)
         post_cost_parts.append(window_post_cost)
         chosen_ks.append(chosen_k)
-        windows.append(
-            SideInfoVariantWindow(
-                index=int(baseline_window.index),
-                train_start=train_slice.index.min(),
-                train_end=train_slice.index.max(),
-                forecast_start=effective_forecast.index.min(),
-                forecast_end=effective_forecast.index.max(),
-                chosen_k=chosen_k,
-                n_train_obs=int(train_slice.shape[0]),
-                n_forecast_obs=int(effective_forecast.shape[0]),
-                bucket_observation_counts=tuple(int(c) for c in bucketed.bucket_observation_counts),
-                boundary_mode=boundary_mode,
-                summary=window_summary,
+        if continuous is not None:
+            windows.append(
+                ContinuousSideInfoVariantWindow(
+                    index=int(baseline_window.index),
+                    train_start=train_slice.index.min(),
+                    train_end=train_slice.index.max(),
+                    forecast_start=effective_forecast.index.min(),
+                    forecast_end=effective_forecast.index.max(),
+                    chosen_k=chosen_k,
+                    n_train_obs=int(train_slice.shape[0]),
+                    n_forecast_obs=int(effective_forecast.shape[0]),
+                    converged=continuous.converged,
+                    rhat_max=_max_parameter_metric(continuous.rhat),
+                    ess_bulk_min=_min_parameter_metric(continuous.ess_bulk),
+                    posterior_mean_W=continuous.posterior_mean_W,
+                    posterior_mean_b=continuous.posterior_mean_b,
+                    posterior_samples=continuous.posterior_samples,
+                    summary=window_summary,
+                )
             )
-        )
+        else:
+            assert bucketed is not None
+            assert boundary_mode is not None
+            windows.append(
+                SideInfoVariantWindow(
+                    index=int(baseline_window.index),
+                    train_start=train_slice.index.min(),
+                    train_end=train_slice.index.max(),
+                    forecast_start=effective_forecast.index.min(),
+                    forecast_end=effective_forecast.index.max(),
+                    chosen_k=chosen_k,
+                    n_train_obs=int(train_slice.shape[0]),
+                    n_forecast_obs=int(effective_forecast.shape[0]),
+                    bucket_observation_counts=tuple(
+                        int(c) for c in bucketed.bucket_observation_counts
+                    ),
+                    boundary_mode=boundary_mode,
+                    summary=window_summary,
+                )
+            )
 
     combined_signal = pd.concat(signal_parts)
     if config.signal_policy in _DISCRETE_SIGNAL_POLICIES:
@@ -782,14 +1009,14 @@ def _build_feature(
     series: pd.Series,
     config: SideInfoComparisonConfig,
 ) -> pd.Series:
-    if variant == VOLATILITY_RATIO_VARIANT:
+    if variant in (VOLATILITY_RATIO_VARIANT, VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT):
         return volatility_ratio(
             series,
             fast_window=config.vol_ratio.fast_window,
             slow_window=config.vol_ratio.slow_window,
             decay=config.vol_ratio.decay,
         )
-    if variant == SEASONALITY_VARIANT:
+    if variant in (SEASONALITY_VARIANT, SEASONALITY_HMC_CONTINUOUS_VARIANT):
         return intraday_seasonality(series, config=config.seasonality)
     raise ValueError(f"unsupported variant {variant!r}.")
 
@@ -812,22 +1039,77 @@ def _dynamic_forward_expected_returns(
     forecast window carries training history instead of restarting from the
     fitted unconditional initial distribution.
     """
-    means = fitted.means
-    variances = fitted.variances
-    if forecast_returns.ndim != 1:
-        raise ValueError(f"forecast_returns must be 1-D, got shape {forecast_returns.shape}.")
-    if forecast_features.shape != forecast_returns.shape:
+    forecast_features = np.asarray(forecast_features, dtype=float)
+    if forecast_features.shape != np.asarray(forecast_returns).shape:
         raise ValueError(
             "forecast_features must have the same shape as forecast_returns; "
-            f"got {forecast_features.shape} vs {forecast_returns.shape}."
+            f"got {forecast_features.shape} vs {np.asarray(forecast_returns).shape}."
         )
-    if not np.all(np.isfinite(forecast_returns)):
-        raise ValueError("forecast_returns must contain only finite values.")
     if not np.all(np.isfinite(forecast_features)):
         raise ValueError("forecast_features must contain only finite values.")
+    transition_matrices = np.stack(
+        [bucketed.transition_matrix_for(float(x)) for x in forecast_features],
+        axis=0,
+    )
+    return _dynamic_forward_expected_returns_from_transition_matrices(
+        forecast_returns=forecast_returns,
+        fitted=fitted,
+        transition_matrices=transition_matrices,
+        initial_state_distribution=initial_state_distribution,
+    )
+
+
+def _dynamic_forward_expected_returns_continuous(
+    *,
+    forecast_returns: np.ndarray,
+    forecast_features: np.ndarray,
+    fitted: GaussianHMMResult,
+    continuous: ContinuousIOHMMResult,
+    initial_state_distribution: np.ndarray,
+) -> np.ndarray:
+    """Run the continuous-IOHMM forward filter and return E[r_{t+1}|info_t]."""
+    transition_matrices = transition_probabilities_at(
+        result=continuous,
+        x_values=forecast_features,
+    )
+    return _dynamic_forward_expected_returns_from_transition_matrices(
+        forecast_returns=forecast_returns,
+        fitted=fitted,
+        transition_matrices=transition_matrices,
+        initial_state_distribution=initial_state_distribution,
+    )
+
+
+def _dynamic_forward_expected_returns_from_transition_matrices(
+    *,
+    forecast_returns: np.ndarray,
+    fitted: GaussianHMMResult,
+    transition_matrices: np.ndarray,
+    initial_state_distribution: np.ndarray,
+) -> np.ndarray:
+    """Run a forward filter using one transition matrix per forecast timestamp."""
+    means = fitted.means
+    variances = fitted.variances
+    forecast_returns = np.asarray(forecast_returns, dtype=float)
+    if forecast_returns.ndim != 1:
+        raise ValueError(f"forecast_returns must be 1-D, got shape {forecast_returns.shape}.")
+    if not np.all(np.isfinite(forecast_returns)):
+        raise ValueError("forecast_returns must contain only finite values.")
 
     n_obs = forecast_returns.shape[0]
     k = means.shape[0]
+    transition_matrices = np.asarray(transition_matrices, dtype=float)
+    if transition_matrices.shape != (n_obs, k, k):
+        raise ValueError(
+            f"transition_matrices must have shape ({n_obs}, {k}, {k}), "
+            f"got {transition_matrices.shape}."
+        )
+    if not np.all(np.isfinite(transition_matrices)):
+        raise ValueError("transition_matrices must contain only finite values.")
+    if not np.all(transition_matrices >= 0.0):
+        raise ValueError("transition_matrices entries must be non-negative.")
+    if not np.allclose(transition_matrices.sum(axis=2), 1.0):
+        raise ValueError("transition_matrices rows must sum to 1.")
     initial_distribution = _coerce_state_distribution(
         initial_state_distribution,
         k=k,
@@ -845,7 +1127,7 @@ def _dynamic_forward_expected_returns(
     log_filtering[0] = log_alpha - logsumexp(log_alpha)
 
     for t in range(1, n_obs):
-        prev_matrix = bucketed.transition_matrix_for(float(forecast_features[t - 1]))
+        prev_matrix = transition_matrices[t - 1]
         with np.errstate(divide="ignore"):
             log_transition = np.log(prev_matrix)
         log_predicted = logsumexp(log_filtering[t - 1][:, None] + log_transition, axis=0)
@@ -855,7 +1137,7 @@ def _dynamic_forward_expected_returns(
     filtering = np.exp(log_filtering)
     expected = np.empty(n_obs, dtype=float)
     for t in range(n_obs):
-        next_matrix = bucketed.transition_matrix_for(float(forecast_features[t]))
+        next_matrix = transition_matrices[t]
         expected[t] = filtering[t] @ next_matrix @ means
     return expected
 
@@ -890,6 +1172,16 @@ def _coerce_state_distribution(
     if not np.isclose(distribution.sum(), 1.0):
         raise ValueError(f"{name} must sum to 1.")
     return distribution.copy()
+
+
+def _max_parameter_metric(metrics: dict[str, np.ndarray]) -> float:
+    values = np.concatenate([np.asarray(value, dtype=float).ravel() for value in metrics.values()])
+    return float(values.max())
+
+
+def _min_parameter_metric(metrics: dict[str, np.ndarray]) -> int:
+    values = np.concatenate([np.asarray(value, dtype=float).ravel() for value in metrics.values()])
+    return int(math.floor(float(values.min())))
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +1232,7 @@ def _write_artifacts(
     _write_summary(run_dir / "summary.json", config, cmp_id, result, reproducible=reproducible)
     for variant, variant_result in result.variants.items():
         _write_variant_log(run_dir / f"{variant}.log.jsonl", variant_result)
+        _write_posterior_samples(run_dir, variant, variant_result)
 
 
 def _write_summary(
@@ -1033,8 +1326,37 @@ def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
         if isinstance(w, SideInfoVariantWindow):
             record["bucket_observation_counts"] = list(w.bucket_observation_counts)
             record["boundary_mode"] = w.boundary_mode
+        elif isinstance(w, ContinuousSideInfoVariantWindow):
+            record["converged"] = w.converged
+            record["rhat_max"] = _json_safe(w.rhat_max)
+            record["ess_bulk_min"] = int(w.ess_bulk_min)
+            record["posterior_mean_W"] = w.posterior_mean_W.tolist()
+            record["posterior_mean_b"] = w.posterior_mean_b.tolist()
         lines.append(json.dumps(record, sort_keys=True, allow_nan=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_posterior_samples(run_dir: Path, variant: str, result: SideInfoVariantResult) -> None:
+    """Persist per-window HMC posterior samples as ``<variant>.posterior/window_<i>.npz``.
+
+    No-op for variants whose windows are not ``ContinuousSideInfoVariantWindow``
+    (baseline, bucketed-grid, bucketed-quantile). Each window file contains
+    ``W`` and ``b`` arrays with shape ``(chains, samples, K, K)`` — the full
+    posterior, not just the mean — so credible intervals and posterior-
+    predictive checks are reproducible from the artifact alone.
+    """
+    hmc_windows = [w for w in result.windows if isinstance(w, ContinuousSideInfoVariantWindow)]
+    if not hmc_windows:
+        return
+    posterior_dir = run_dir / f"{variant}.posterior"
+    posterior_dir.mkdir(exist_ok=True)
+    for window in hmc_windows:
+        path = posterior_dir / f"window_{window.index:04d}.npz"
+        np.savez(
+            path,
+            W=window.posterior_samples["W"],
+            b=window.posterior_samples["b"],
+        )
 
 
 def _summary_to_payload(summary: pd.DataFrame) -> dict[str, dict[str, float | None]]:
