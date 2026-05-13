@@ -39,6 +39,7 @@ import math
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -782,8 +783,11 @@ def _run_side_info_variant(
     post_cost_parts: list[pd.Series] = []
     chosen_ks: list[int] = []
     initial_position = 0
+    total_windows = len(baseline_windows)
+    is_hmc_variant = variant in _HMC_CONTINUOUS_VARIANTS
 
-    for baseline_window in baseline_windows:
+    for window_position, baseline_window in enumerate(baseline_windows, start=1):
+        window_start_time = time.monotonic()
         train_mask = (bar_dates >= baseline_window.train_start.date()) & (
             bar_dates <= baseline_window.train_end.date()
         )
@@ -958,6 +962,23 @@ def _run_side_info_variant(
                     boundary_mode=boundary_mode,
                     summary=window_summary,
                 )
+            )
+
+        elapsed = time.monotonic() - window_start_time
+        if is_hmc_variant and continuous is not None:
+            print(
+                f"[{variant}] window {window_position}/{total_windows} "
+                f"index={int(baseline_window.index)} done in {elapsed:.1f}s "
+                f"converged={continuous.converged} "
+                f"rhat_max={_max_parameter_metric(continuous.rhat):.3f} "
+                f"ess_bulk_min={_min_parameter_metric(continuous.ess_bulk)}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[{variant}] window {window_position}/{total_windows} "
+                f"index={int(baseline_window.index)} done in {elapsed:.1f}s",
+                flush=True,
             )
 
     combined_signal = pd.concat(signal_parts)
