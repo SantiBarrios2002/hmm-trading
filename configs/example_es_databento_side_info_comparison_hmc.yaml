@@ -1,3 +1,7 @@
+bucketed_transition:
+  grid_size: 200
+  n_buckets: 3
+  smoothing: 1.0
 continuous_iohmm:
   ess_bulk_threshold: 200
   num_chains: 2
