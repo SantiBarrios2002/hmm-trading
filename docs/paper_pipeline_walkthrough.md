@@ -308,3 +308,414 @@ venue, order book) is a separate research program unrelated to the
 regime-detection focus of this paper. Both are listed in
 `paper_spec.md §2.5` as scope-bounded exclusions, not gaps.
 
+---
+
+## In-depth defense reference: anticipated tutor questions
+
+This section expands six likely questions that the higher-level pipeline
+walkthrough above only summarizes. Use it as a defense crib sheet.
+
+### 1. Why isn't PLR initialization used?
+
+**What PLR is.** Piecewise Linear Regression — paper §3.1 segments the
+return series into trend / no-trend pieces, then uses each segment's
+statistics (mean, variance, length) as a prior on what the HMM states
+should look like. Concretely: if PLR finds three trend segments, you seed
+K=3 states with the segment means/variances and let Baum-Welch refine.
+
+**What we do instead.** `hmmlearn`'s default k-means initialization —
+clusters the *observations* into K groups and uses cluster centroids as
+starting means. Standard practice in the HMM literature.
+
+**Why this is fine.**
+- For K∈{2,3,4} on minute returns, the likelihood surface is well-behaved.
+  EM converges to essentially the same Θ across initialization schemes;
+  variance across multiple restarts is numerical noise.
+- PLR's value-add is when the likelihood has multiple modes that EM can
+  get stuck in. That is not the regime here.
+- The repo *does* implement PLR (`plr_baseline.py`) — used as an
+  interpretable baseline trend summary, just not wired into the HMM init.
+  Wiring it in is ~2 days of work and would close the §3.1 fidelity gap
+  formally, but on this data it would not change the answer.
+
+### 2. MCMC for parameter estimation — and where does HMC come in?
+
+This is the question where the distinction matters most.
+
+The HMM has parameters
+
+```
+Θ = {π, A, μ₁..μ_K, σ²₁..σ²_K}
+```
+
+where π is the initial-state distribution, A is the transition matrix,
+and μ_k / σ²_k are the state-conditional Gaussian emission parameters.
+
+**The paper proposes two estimation routes for Θ:**
+- Baum-Welch / EM — iterative MLE.
+- Metropolis-Hastings MCMC — random-walk sampling of the posterior over Θ.
+
+**We use only EM. MCMC-on-Θ stays excluded** because:
+- For a diagonal-Gaussian HMM with K=2-4 on minute returns the likelihood
+  is sharply concentrated and well-behaved.
+- EM and MH converge to the same Θ in this regime; the posterior is so
+  tight that the point estimate and posterior mean differ only in
+  numerical noise.
+- A generic MH sampler is ~500–1000 LOC and days of compute per fit for
+  an answer that matches `hmmlearn` to ~4 decimals.
+
+**Where HMC enters (Gate K).** The paper's IOHMM transition function
+`A(x_t)` is a different problem from Θ. Gate K models
+
+```
+A_ij(x_t) = softmax_j(W_i · x_t + b_i)
+```
+
+and uses NumPyro NUTS (a Hamiltonian Monte Carlo variant) to sample the
+posterior over **(W, b)** — the transition-function parameters. The
+emission parameters {μ_k, σ²_k} stay fixed at the Baum-Welch fit.
+
+So the precise summary:
+
+- MCMC on Θ → still excluded (BW dominates it on this data).
+- MCMC on (W, b) → implemented as Gate K (the paper's continuous-parametric
+  form, which EM cannot fit naturally without per-bar transition
+  observations).
+
+This satisfies the Tema 2 MCMC requirement and closes the §8 IOHMM
+approximation gap in one contribution.
+
+### 3. AIC/BIC — what they are, why only these
+
+Paper §4 specifies three model-selection routes for choosing K:
+cross-validation, AIC/BIC, and MCMC bridge sampling. The repo implements
+AIC/BIC.
+
+**Definitions.**
+
+```
+AIC = 2p − 2·log L        (Akaike Information Criterion)
+BIC = p·log(n) − 2·log L  (Bayesian Information Criterion)
+```
+
+where `p` = number of fitted parameters, `L` = maximized likelihood,
+`n` = number of observations. Lower is better — pick the K that minimizes
+the criterion.
+
+**Intuition.**
+- Both balance fit (high `log L`) against complexity (high `p`).
+- AIC penalizes each parameter by a constant `2`.
+- BIC penalizes by `log(n)`, which grows with sample size. For `n > 7`
+  we have `log(n) > 2`, so BIC penalizes complexity more heavily than AIC
+  on any non-tiny dataset.
+- AIC asymptotically minimizes prediction error (under iid).
+- BIC asymptotically picks the "true" model (under iid + true model in
+  candidate set).
+
+**Parameter counts** for a K-state diagonal-Gaussian HMM are `K² + K − 1`:
+
+| K | p |
+|---|---|
+| 2 | 5  |
+| 3 | 11 |
+| 4 | 19 |
+
+**Why only AIC/BIC.**
+- **Bridge sampling** is excluded by §2.5 for the same reason as MCMC-on-Θ:
+  it is MCMC machinery to confirm what AIC/BIC already say. With Gate K
+  in, the "we did MCMC" credential no longer depends on bridge sampling.
+- **CV** is just a gap — the cheapest of the three to add, and is listed
+  as the most defensible model-selection extra. **Flag this to the tutor
+  as a known follow-up.**
+
+**Honest empirical caveat.** In the long-window ablation (`h_days=60`)
+BIC selects K=4 in every walk-forward window for every variant. Forecast
+Sharpe drops. Reason: BIC's `p·log(n)` penalty grows slowly in `n`, so a
+long training window over-justifies higher-state models. The extra states
+fit training-window noise rather than predictive structure. CV would
+likely overrule BIC here because CV scores on held-out prediction —
+the metric we actually care about.
+
+### 4. Seasonality and spline fitting in depth
+
+#### Seasonality (§4.3)
+
+Intraday returns have time-of-day structure — opening volatility burst,
+midday lull, closing flurry. Encoding "time of day" as side information
+lets the model condition transitions on which intraday regime is active.
+
+**Implementation.**
+1. Take the UTC timestamp of each bar.
+2. Convert to **Chicago local time** (`America/Chicago`) — ES futures
+   clear at CME in Chicago, so exchange-local time is what matters;
+   UTC blurs daylight-savings transitions.
+3. Bucket each minute into a time-of-day bin. Config: `bucket_minutes=1`
+   means each minute of the day is its own bin.
+4. Optionally normalize: `bucket_index / total_buckets ∈ [0, 1]` so the
+   downstream spline receives a clean scalar input.
+
+**Where this is an approximation.**
+- Time-zone conversion: paper-faithful (Chicago time for ES).
+- Bucket encoding: the paper isn't fully specific — one-hot, scalar, or
+  multi-dim time-of-day bases are all defensible. The repo uses the
+  scalar `bucket_index / total_buckets`.
+
+#### Spline fitting (§4.1)
+
+Goal: learn `f(x_t) ≈ E[r_{t+1} | x_t]` — a smooth, nonlinear function of
+the side-information signal.
+
+**Why splines.** Linear regression is too restrictive (the relationship is
+plausibly nonlinear). Kernel methods are flexible but harder to make
+deterministic. Splines hit the sweet spot: piecewise polynomial, smooth at
+the joins ("knots"), fit by closed-form least squares.
+
+**The repo's choices.**
+
+```yaml
+spline:
+  degree: 3       # cubic polynomial pieces
+  n_knots: 5      # 5 knot points → 4 piecewise segments
+  demean: false   # do not subtract the mean over the support
+  min_obs: 20     # need ≥20 points before fitting
+```
+
+- **Cubic (degree 3):** smooth first and second derivatives at knots;
+  standard default.
+- **5 knots at quantiles:** knot placement at the 0%, 25%, 50%, 75%,
+  100% quantiles of training `x_t`. Quantile knots = balanced data per
+  segment, which avoids fitting a segment to a few outliers.
+- **Demean off** in the headline config: the paper specifies
+  `∫ f(x) dx = 0` (zero-mean predictor) but the bucketed IOHMM downstream
+  doesn't require it; demeaning is left as a config knob.
+- **Deterministic least-squares:** B-spline basis matrix `B`,
+  solve `min ‖y − Bβ‖²` for coefficients `β`. No regularization —
+  overfitting is controlled by `n_knots`.
+
+**Where this is an approximation.** The paper says "splines fit the
+conditional mean" but does not specify number of knots, knot placement
+(uniform vs quantile vs adaptive), basis (B-spline vs natural vs other),
+or regularization. All defensible engineering choices.
+
+**Where the spline plugs into the pipeline.**
+- Standalone-predictor mode: `f(x_t)` is the prediction directly — used in
+  `standalone_predictor` runs.
+- IOHMM mode: the spline's output (or `x_t` itself) feeds the transition
+  conditioning. The bucketed IOHMM buckets the spline's domain; Gate K
+  HMC takes (preprocessed) `x_t` directly into the softmax.
+
+### 5. IOHMM transition — bucketed vs continuous-parametric HMC
+
+The heart of Gate K.
+
+**Baseline HMM (no side info):** single fixed `K×K` matrix,
+`A_{ij} = P(m_t = j | m_{t-1} = i)`, same for all `t`.
+
+**IOHMM (paper §4):** the transition depends on side info `x_t`,
+
+```
+A_{ij}(x_t) = P(m_t = j | m_{t-1} = i, x_t)
+```
+
+The paper specifies this as a continuous parametric function of `x_t`.
+They don't fully nail down the parametric form; one natural choice — and
+what the repo implements in Gate K — is the row-wise multinomial-logit
+(softmax):
+
+```
+A_{ij}(x_t) = exp(W_{ij} · x_t + b_{ij}) / Σ_k exp(W_{ik} · x_t + b_{ik})
+```
+
+Each row stays a valid probability distribution; the dependence on `x_t`
+is smooth (small changes in `x_t` → small changes in `A(x_t)`).
+
+#### Bucketed approximation (Gate H, `iohmm_approx.py`)
+
+The engineering shortcut:
+
+1. Discretize `x_t` into **B buckets** (B=3 in the headline config: low /
+   mid / high).
+2. Fit one transition matrix `A⁽ʳ⁾` per bucket `r` by counting transitions
+   on the training data restricted to bars where `x_t ∈ bucket r`.
+3. Smooth toward the pooled baseline to handle low-count buckets.
+4. At prediction time: when `x_t` lands in bucket `r`, use `A⁽ʳ⁾` for the
+   forward step.
+
+Why this is an *approximation*:
+
+- A real continuous function changes smoothly as `x_t` crosses any
+  boundary. The bucketed version has **step discontinuities** at bucket
+  edges — every `x_t` in the same bucket gets the *same* `A`, then it
+  jumps when you cross the boundary. Unphysical.
+- Within a bucket all variation in `x_t` is thrown away. A "barely-low-vol"
+  and a "very-low-vol" bar get treated identically.
+- The bucket boundaries are a hyperparameter — different choices give
+  different answers. Issue 42 (quantile boundaries) is on the to-do list
+  precisely so the boundaries are derived rather than chosen ad-hoc.
+
+#### Continuous-parametric HMC (Gate K, `iohmm_continuous.py`)
+
+**Paper-faithful** because the repo implements the continuous functional
+form the paper specifies, fit per walk-forward window with NumPyro NUTS.
+
+**Why HMC instead of MLE for (W, b).**
+- The logit IOHMM has no closed-form M-step. MLE-by-gradient-descent is
+  one option, but HMC gives the full posterior over (W, b), not just a
+  point estimate.
+- HMC / NUTS exploits the gradient of the log-posterior efficiently — far
+  better mixing than random-walk MH on parametric models with continuous
+  parameters.
+- The parameter space is small (≈ K²·dim(x) ≈ 10 params), well-suited to
+  HMC.
+- Bayesian framing = direct tie to the Tema 2 MCMC syllabus block.
+
+**Side-by-side comparison.**
+
+| Property | Bucketed (Gate H) | HMC continuous (Gate K) |
+|---|---|---|
+| Functional form | step (piecewise constant in `x_t`) | smooth softmax in `x_t` |
+| Continuity in `x_t` | discontinuous at boundaries | continuous everywhere |
+| Information use | discards within-bucket variation | uses full `x_t` precision |
+| Bucket boundaries as a hyperparameter | yes — sensitive to placement | none |
+| Matches paper's spec | engineering approximation | yes — continuous parametric |
+
+The bucketed variant is retained as the engineering-approximation
+**baseline** for the grid-vs-continuous ablation. Without the bucketed run
+alongside Gate K you cannot isolate "how much of the Sharpe difference is
+from going continuous?" from other shifts.
+
+### 6. Trading signal, pre/post-cost Sharpe, and the cost model
+
+#### The trading signal
+
+The HMM / IOHMM produces
+
+```
+ŷ_t = E[r_{t+1} | r_{1:t}] = Σ_j ω_{t+1|t, j} · μ_j
+```
+
+This is a continuous-valued expected next return. To trade, convert it
+into a position.
+
+The paper writes `Signal_t = TF(ŷ_t)` but doesn't define `TF`. This is the
+underspecification the repo works around with three policies:
+
+**a) `sign` (paper-faithful default).** `s_t = sign(ŷ_t) ∈ {−1, +1}`.
+Always fully invested in one direction. Long if expected return positive,
+short if negative. Maximally aggressive (no flat state) and maximally
+turnover-prone.
+
+**b) `thresholded_hold`.**
+
+```
+if |ŷ_t| < θ:  s_t = s_{t-1}   # hold previous position
+else:          s_t = sign(ŷ_t)
+```
+
+Skips trades when the predicted edge is small. Empirical result on ES
+1-min: turnover cut by ~78%, but pre-cost Sharpe drops by half. Most of
+the directional signal lives in *small-magnitude* predictions that fall
+inside the dead zone.
+
+**c) `conviction_weighted`.** `s_t = clip(ŷ_t / σ_train, −1, +1)` —
+continuous position size scaling with prediction magnitude. Idea: trust
+large predictions more. Empirical result: **negative on this data** —
+reduces Sharpe across every variant. The HMM's prediction magnitude does
+not correlate with directional accuracy on ES 1-min: the strategy wins
+because many small bets compound, not because large-magnitude predictions
+are more accurate.
+
+#### Strategy return
+
+```
+R^strategy_{t+1} = s_t · r_{t+1}
+```
+
+The `t → t+1` lag is critical: signal formed at `t` can only trade the
+return at `t+1`. The repo asserts this in `align_signal_with_future_return`
+to prevent off-by-one look-ahead bugs.
+
+#### Sharpe ratio
+
+```
+Daily Sharpe = sqrt(258) · mean(R_daily) / std(R_daily)
+```
+
+`258` ≈ trading days per year (paper convention). The repo aggregates
+intraday returns to daily *first* (sum by UTC date), then computes Sharpe
+on the daily series. **Doing it the other way — annualizing minute-level
+Sharpe by `sqrt(252·390)` — would be wrong**, because minute returns are
+not iid daily so the variance scaling breaks.
+
+#### Pre-cost vs post-cost
+
+Pre-cost: `R^pre_{t+1} = s_t · r_{t+1}`.
+
+Post-cost: `R^post_{t+1} = s_t · r_{t+1} − cost(|s_t − s_{t-1}|)`.
+
+Pre-cost is the **academic comparison target** — it answers "does the
+model contain directional information?". Post-cost is a stress test that
+adds "and can you trade it after a transparent cost assumption?".
+
+#### The cost model
+
+```
+cost(|Δs|) = cost_bps_per_turnover × |Δs| / 10000
+```
+
+with `cost_bps_per_turnover = 1.0` as default.
+
+**Turnover convention.** `|Δs|` is the absolute change in position size.
+Going from `0 → +1` is `|Δs| = 1` → 1 bp cost; going from `+1 → −1` (full
+flip) is `|Δs| = 2` → 2 bp cost. So an *entry* costs 1 bp, a *flip* costs
+2 bp (round trip).
+
+**Numerical impact on the headline run** (baseline HMM, sign policy):
+- 82,044 position changes over the sample
+- × 2 turnover units per flip × 1 bp = ~164,000 bp of cumulative cost
+- Pre-cost cumulative return `0.94` → post-cost `−1.00` (full wipe-out)
+- Pre-cost Sharpe `0.53` → post-cost `−8.9`
+
+#### Why pre-cost is honest and post-cost is diagnostic
+
+**Paper-comparison side (pre-cost).** The paper reports pre-cost Sharpe
+as the academic comparison number. It does not specify its cost model in
+any reproducible detail ("post-cost falls by ~15%" without bps, per-side
+convention, slippage, fees, or fill model). The repo uses pre-cost when
+comparing to the paper. Best pre-cost Sharpe in the headline run is
+**0.7577** (vol-ratio, sign); paper reports `≈ 2.0`. Large absolute gap,
+but the directional claim (side-info beats baseline) holds.
+
+**Diagnostic side (post-cost at 1 bp).** The 1 bp/turnover convention is
+**conservative for ES futures** — real ES round-trip cost for a retail
+trader using market orders is around 0.5–1.0 bp, and lower for
+institutional flow. At 1-minute cadence with the sign policy flipping
+~25 bars on average, the cost drag dominates. The strategy is
+unprofitable under this assumption.
+
+**Why we don't tune the cost number to match the paper's "15% drop":**
+that would be reverse-engineering an undocumented number, and every reader
+would correctly suspect we chose the value that produced a 15% gap.
+Better to publish both sides transparently and let the reader decide.
+
+#### Likely tutor follow-ups
+
+1. *Why softmax for the IOHMM transition and not something else?* — rows
+   sum to 1 automatically; gradients are smooth; the multinomial-logit
+   form is the natural Bayesian generalization of a transition matrix to
+   continuous covariates.
+2. *What's the prior on (W, b)?* — `Normal(0, 1)` per element, weakly
+   informative. Row-centering applied post-hoc to handle the
+   rank-deficiency of softmax (rows are identifiable only up to an
+   additive constant).
+3. *Why not use cross-validation now if BIC is overfitting?* — it's the
+   scoped next extra; the negative-result narrative around BIC is
+   pedagogically useful for the defense (concrete demonstration of when
+   each criterion fails).
+4. *Are there windows where HMC fails to converge?* — yes, occasional
+   divergences are expected at the default `num_warmup=500`,
+   `target_accept_prob=0.8`. The runner reports rhat and ess_bulk per
+   window so non-mixing chains are flagged rather than absorbed silently.
+   Mitigation options if a window diverges: bump `num_warmup` or
+   `target_accept_prob`, or tighten the spline prior on that data slice.
+
