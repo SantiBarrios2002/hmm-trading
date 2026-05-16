@@ -352,10 +352,7 @@ class SideInfoComparisonConfig:
         )
         ci_raw = raw.get("continuous_iohmm", {})
         if not isinstance(ci_raw, Mapping):
-            raise ValueError(
-                "continuous_iohmm must be a mapping; "
-                f"got {type(ci_raw).__name__}."
-            )
+            raise ValueError("continuous_iohmm must be a mapping; " f"got {type(ci_raw).__name__}.")
         continuous_iohmm = ContinuousIOHMMConfig(
             num_chains=int(ci_raw.get("num_chains", 2)),
             num_warmup=int(ci_raw.get("num_warmup", 500)),
