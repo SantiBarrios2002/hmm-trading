@@ -2,13 +2,16 @@
 
 This roadmap plans two original contributions on top of the HMM replication:
 
-- ✅ **MCMC extension (Gate K) — done.** Closes the §8 IOHMM gap (continuous
+- ✅ **MCMC extension (Gate K) — shipped.** Closes the §8 IOHMM gap (continuous
   parametric `A(x_t)` replaces the bucketed approximation) and satisfies
   Tema 2 of the syllabus. Implemented in
-  [`models/iohmm_continuous.py`](../src/hft_hmm/models/iohmm_continuous.py)
-  on branch `feat/47-hmc-iohmm` / PR #48. Full 6-year ES walk-forward
-  benchmark is in flight; results to land in
-  [`results_vs_paper.md`](results_vs_paper.md) once complete.
+  [`models/iohmm_continuous.py`](../src/hft_hmm/models/iohmm_continuous.py),
+  merged via #48. Full 6-year ES walk-forward benchmark complete
+  (run `d8b6e7eef6c2`). **Outcome: negative result on Sharpe** — the
+  paper-faithful continuous form does not beat the bucketed approximation
+  on this data (vol-ratio 0.65 vs 0.76; seasonality tied within noise).
+  See [`results_vs_paper.md`](results_vs_paper.md) for the full table and
+  the three plausible explanations.
 - 🟡 **Deep Markov Model extension (Gate L) — planned next.** Closes the
   "modern alternatives" gap, generalizes the HMM along the state-space
   ladder.
@@ -62,9 +65,10 @@ relaxing linearity and discreteness." Every rung is in the syllabus.
 
 ### Option A — HMC on IOHMM transitions only ✅ DONE
 
-Implemented as Gate K (`models/iohmm_continuous.py`, PR #48). NumPyro NUTS
-samples `(W, b)` of `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` per walk-forward
-window. DMM (Gate L) will be trained with variational inference, as
+Implemented and merged as Gate K (`models/iohmm_continuous.py`, merged in #48).
+NumPyro NUTS samples `(W, b)` of `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` per
+walk-forward window. Full 6-year benchmark complete; converged cleanly on
+183/184 fits. DMM (Gate L) will be trained with variational inference, as
 originally planned — MCMC stays on the small, well-identified transition
 problem where it converges cleanly.
 
@@ -91,7 +95,7 @@ HMC-vs-VI comparison interesting.
 |---|---|---|
 | 0 — paper read + toolchain check | Read DMM §3–4 carefully; reproduce the polyphonic-music likelihood numbers in Pyro's `dmm` example to confirm the toolchain works on your hardware. | pending |
 | 1a — Quantile bucket boundaries (Issue 42) | Add `quantile` boundary mode to `BucketedTransitionConfig` so the bucketed IOHMM has balanced bucket counts. Tracked at GitHub Issue 42. Without it, part of the Gate K HMC "win" would be attributable to bucket imbalance rather than continuous conditioning. | open (deferred; not blocking Gate K initial benchmark, but required before publishing the grid-vs-continuous result as a clean attribution) |
-| 1b — HMC IOHMM (Gate K) | NumPyro NUTS samples `(W, b)` of `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` per walk-forward window. Reuses existing IOHMM data flow. Compared against the grid-bucketed baseline within `configs/example_es_databento_side_info_comparison_hmc.yaml`. | ✅ implemented; full 6-year benchmark in flight |
+| 1b — HMC IOHMM (Gate K) | NumPyro NUTS samples `(W, b)` of `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` per walk-forward window. Reuses existing IOHMM data flow. Compared against the grid-bucketed baseline within `configs/example_es_databento_side_info_comparison_hmc.yaml`. | ✅ shipped; full 6-year benchmark complete (run `d8b6e7eef6c2`); negative-result outcome (see `results_vs_paper.md`) |
 | 2 — DMM walk-forward integration (Gate L) | Wrap Pyro DMM, expose `predict_next_return`, register as a variant in `EXPECTED_VARIANTS`, run side-by-side with HMM / IOHMM. | planned |
 | 3 — write-up | State-space ladder figure, IOHMM ablation table (grid / quantile / HMC), HMC-posterior-vs-BW-point comparison plot, Sharpe table across all variants, negative-result discussion if DMM doesn't lift Sharpe. | pending Gate K results + Gate L |
 

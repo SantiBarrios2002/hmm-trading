@@ -1,16 +1,21 @@
 # Supervisor Notes: HMM Intraday Momentum Project
 
-> **Status note (2026-05-15):** this document is the original April-27 pitch
+> **Status note (2026-05-16):** this document is the original April-27 pitch
 > to the supervisor. It is preserved here as a historical record of the
 > proposed scope. Two material scope changes have happened since:
 >
 > 1. **MCMC is no longer excluded.** Gate K
 >    ([`models/iohmm_continuous.py`](../src/hft_hmm/models/iohmm_continuous.py),
->    PR #48) implements the paper-faithful continuous-parametric IOHMM
+>    merged in #48) implements the paper-faithful continuous-parametric IOHMM
 >    transition `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` and fits `(W, b)`
 >    with NumPyro NUTS per walk-forward window. MCMC on the HMM
 >    emission parameters Θ remains excluded by `IMPLEMENTATION_PLAN.md §2.5`.
->    Full benchmark of the HMC variants is in flight as of this date.
+>    Full 6-year ES benchmark complete (run `d8b6e7eef6c2`). **Outcome is a
+>    negative result on Sharpe**: the paper-faithful continuous form does
+>    not beat the bucketed approximation on this data (vol-ratio 0.65 vs
+>    0.76; seasonality tied within noise). The contribution is the
+>    methodology and convergence diagnostics, not a Sharpe improvement.
+>    See [`results_vs_paper.md`](results_vs_paper.md) for the table.
 > 2. **A Deep Markov Model benchmark (Gate L) is planned as a second
 >    extension**, climbing the state-space ladder beyond the HMM/IOHMM
 >    pair. See [`dmm_mcmc_roadmap.md`](dmm_mcmc_roadmap.md).

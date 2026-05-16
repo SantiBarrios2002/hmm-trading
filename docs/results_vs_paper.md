@@ -67,7 +67,7 @@ use the bucketed-transition approximation (`models/iohmm_approx.py`). The
 paper-faithful continuous-parametric form,
 `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit with NumPyro NUTS per
 walk-forward window, is implemented as Gate K
-(`models/iohmm_continuous.py`, PR #48). The comparison config
+(`models/iohmm_continuous.py`, merged in #48). The comparison config
 [`configs/example_es_databento_side_info_comparison_hmc.yaml`](../configs/example_es_databento_side_info_comparison_hmc.yaml)
 runs the bucketed and HMC variants side-by-side under identical
 walk-forward settings so the grid-vs-continuous ablation has a fair
@@ -412,12 +412,15 @@ The main gaps are:
   ([`iohmm_continuous.py`](../src/hft_hmm/models/iohmm_continuous.py)) and
   preserves the §2.5 exclusion on Θ because NUTS samples only `(W, b)`,
   with emissions held at the Baum-Welch fit.
-- **Implementation approximation:** the headline numbers above are still
+- **Implementation approximation:** the headline numbers above are
   from the finite bucketed-transition approximation in
   [`iohmm_approx.py`](../src/hft_hmm/models/iohmm_approx.py). The paper-
-  faithful continuous-parametric form is implemented as Gate K and run
-  side-by-side in the dedicated comparison config; its results are
-  pending the in-flight benchmark.
+  faithful continuous-parametric form is implemented as Gate K and was
+  run side-by-side under the dedicated Gate K config (run
+  `d8b6e7eef6c2`); see the "Gate K HMC continuous-parametric IOHMM"
+  subsection for those results. The Gate K outcome is a negative result
+  on Sharpe — the bucketed approximation remains the better-performing
+  variant on vol-ratio.
 - **Numerical / stochastic variation:** all runs are deterministic for the
   saved configs, but fitted HMM parameters remain sensitive to the short
   sample and to the stabilized EM settings documented in

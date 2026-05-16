@@ -55,7 +55,7 @@ in [`docs/results_vs_paper.md`](results_vs_paper.md).
 ### 8. IOHMM transition conditioning (§4)
 - **Paper:** Continuous parametric conditioning — `A` is a function of `x_t` through a side-information model.
 - **Repo:** Both forms are now implemented and run side-by-side for ablation:
-  - ✅ **Continuous-parametric HMC** (`models/iohmm_continuous.py`, Gate K, branch `feat/47-hmc-iohmm` / PR #48). `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit with NumPyro NUTS per walk-forward window. Paper-faithful transition parameterization. Emissions remain at the Baum-Welch fit (the §2.5 exclusion on MCMC-of-Θ still stands) — NUTS samples only `(W, b)`.
+  - ✅ **Continuous-parametric HMC** (`models/iohmm_continuous.py`, Gate K, merged in #48). `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit with NumPyro NUTS per walk-forward window. Paper-faithful transition parameterization. Emissions remain at the Baum-Welch fit (the §2.5 exclusion on MCMC-of-Θ still stands) — NUTS samples only `(W, b)`. Full 6-year ES benchmark complete (run `d8b6e7eef6c2`); 183/184 fits converged cleanly, one isolated divergence on vol-ratio window 19. **Outcome is a negative result on Sharpe** — see `results_vs_paper.md`.
   - 🟡 **Bucketed-transition approximation** (`models/iohmm_approx.py`). We discretize `x_t` into 3 buckets and fit one transition matrix per bucket with smoothing toward the pooled baseline. Retained as the engineering-approximation baseline for the grid-vs-continuous comparison.
 
 ### 9. Variants tested (§4)
@@ -68,7 +68,7 @@ in [`docs/results_vs_paper.md`](results_vs_paper.md).
   - ✅ IOHMM with seasonality (HMC continuous-parametric, Gate K).
   - ❌ **Combined vol+seasonality IOHMM not implemented.** Not formally excluded — just deferred for plumbing reasons (would change `EXPECTED_VARIANTS` and break existing comparison_id hashes). The single most likely change to lift Sharpe and the recommended next variant.
 
-The two HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. As of writing, the full 6-year ES walk-forward run is in flight on CPU; results will land in `results_vs_paper.md` once it completes.
+The two HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. The full 6-year ES walk-forward run completed (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for the headline numbers and the negative-result discussion.
 
 ### 10. Asynchronous IOHMM
 - **Paper:** Sketches an asynchronous variant for mixed-frequency inputs (e.g., daily macro features mixed with minute returns).
@@ -107,7 +107,7 @@ The two HMC variants and their bucketed counterparts are run in one comparison (
 
 Status as of now:
 
-- ✅ **HMC continuous-parametric IOHMM (Gate K) is done** — closes the §8 approximation gap *and* delivers the Tema 2 MCMC contribution in one PR. Full benchmark is mid-run; results to be folded into `results_vs_paper.md`.
+- ✅ **HMC continuous-parametric IOHMM (Gate K) is shipped** — closes the §8 approximation gap *and* delivers the Tema 2 MCMC contribution in one PR (merged in #48). Full 6-year ES benchmark complete (run `d8b6e7eef6c2`); methodology delivered but **the outcome is a negative result on Sharpe** — bucketed beats HMC on vol-ratio (0.76 vs 0.65), tied within noise on seasonality. See `results_vs_paper.md` for the table and the three plausible explanations.
 - 🟡 Gate L (DMM benchmark) is the planned next contribution (modern alternative on the state-space ladder, see scope justification §6).
 
 Remaining gap-closing extras the doc still tracks, ranked by paper-fidelity vs cost:
@@ -160,12 +160,13 @@ The paper's §2.5 exclusion of MCMC on Θ is defensible (BW converges to the
 same answer), but there are MCMC-shaped contributions that *aren't* redundant
 with Baum-Welch and that close real gaps in the current pipeline:
 
-- **HMC on a continuous-parametric IOHMM transition.** ✅ **Implemented as
-  Gate K** (`models/iohmm_continuous.py`, PR #48). `A_ij(x_t) = softmax_j(W_i · x_t + b_i)`
+- **HMC on a continuous-parametric IOHMM transition.** ✅ **Shipped as
+  Gate K** (`models/iohmm_continuous.py`, merged in #48). `A_ij(x_t) = softmax_j(W_i · x_t + b_i)`
   fit with NumPyro NUTS per walk-forward window, NUTS samples only the
   transition logits `(W, b)` while emissions stay at the Baum-Welch fit. This
   closes the §8 approximation gap and delivers the MCMC contribution in one
-  PR. Full benchmark is mid-run.
+  PR. Full 6-year ES benchmark complete; negative-result outcome on Sharpe
+  documented in `results_vs_paper.md`.
 - **Bayesian model averaging across K.** Instead of picking one K, compute
   posterior weights over K ∈ {2, 3, 4} (bridge sampling or marginal
   likelihoods) and average forecasts. Closes §5 differently from CV —
@@ -215,8 +216,9 @@ specific gap or underspecification in the paper:
 
 The "one MCMC + one ML item" pairing for defense-day strength:
 
-1. **HMC IOHMM** — ✅ done as Gate K; closes §8 and satisfies the MCMC ask in
-   one PR. Full benchmark mid-run.
+1. **HMC IOHMM** — ✅ shipped as Gate K (merged in #48); closes §8 and
+   satisfies the MCMC ask in one PR. Full 6-year benchmark complete;
+   negative-result outcome on Sharpe documented in `results_vs_paper.md`.
 2. **DMM benchmark (Gate L)** — chosen modern alternative; see scope
    justification §6. The "state-space ladder" framing makes the comparison
    tighter than an LSTM baseline.
@@ -279,11 +281,14 @@ surface for a feature with nothing to operate on in this setup.
 The paper specifies a continuous-parametric `A(x_t)`. The repo initially
 discretized `x_t` into three buckets and fit one transition matrix per
 bucket — an engineering approximation labeled as such in `paper_spec.md`.
-**Gate K (`models/iohmm_continuous.py`, PR #48) now implements the
+**Gate K (`models/iohmm_continuous.py`, merged in #48) implements the
 paper-faithful continuous-parametric form**, fit with NumPyro NUTS per
 walk-forward window. This closes the §8 approximation gap and absorbs
-the Tema 2 MCMC requirement in a single contribution. The bucketed
-variant is retained as the engineering-approximation baseline so the
+the Tema 2 MCMC requirement in a single contribution — but the full
+6-year ES benchmark is a *negative result on Sharpe*: the bucketed
+approximation still wins on vol-ratio, the two are tied within noise on
+seasonality (see `results_vs_paper.md`). The bucketed variant is
+retained as the engineering-approximation baseline so the
 grid-vs-continuous ablation has a fair within-config comparison.
 
 ### 6. DMM as the chosen modern-alternative benchmark
