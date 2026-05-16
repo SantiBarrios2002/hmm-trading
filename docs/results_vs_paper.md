@@ -54,6 +54,21 @@ does not specify enough execution-cost detail for a clean reproduction target.
 | Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
 | Long-only benchmark | n/a | 0.6410 | 0.4091 | 1.3064 | Evaluation benchmark, not a paper model | `04269749abff` |
 
+### Pending: Gate K HMC continuous-parametric IOHMM
+
+The volatility-ratio and seasonality variants above use the bucketed-
+transition approximation (`models/iohmm_approx.py`). The paper-faithful
+continuous-parametric form, `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit
+with NumPyro NUTS per walk-forward window, is implemented as Gate K
+(`models/iohmm_continuous.py`, PR #48). Its full 6-year ES benchmark is
+in flight at the time of writing; numbers will be added to the table
+once the run completes and per-window convergence diagnostics
+(rhat ≤ 1.05, ess_bulk ≥ 200 per the config thresholds) have been
+audited. The comparison config
+[`configs/example_es_databento_side_info_comparison_hmc.yaml`](../configs/example_es_databento_side_info_comparison_hmc.yaml)
+runs the bucketed and HMC variants side-by-side so the grid-vs-continuous
+ablation has a fair within-config baseline.
+
 ## Sharpe-Improvement Experiments
 
 The headline pre-cost daily Sharpe in the table above (best variant 0.7577 vs
@@ -315,13 +330,19 @@ The main gaps are:
 - **Data scope:** the repo table uses local Databento continuous-contract ES
   data from 2019 through 2024, not the paper's exact historical sample/vendor
   window.
-- **Model scope:** MCMC parameter estimation, MCMC bridge sampling,
-  asynchronous IOHMM, multi-security portfolios, and production execution
-  modeling are excluded by the project scope.
-- **Implementation approximation:** side-information conditioning uses the
-  finite bucketed-transition approximation in
-  [`iohmm_approx.py`](../src/hft_hmm/models/iohmm_approx.py), not the exact
-  continuous IOHMM formulation.
+- **Model scope:** MCMC parameter estimation on Θ (emissions), MCMC bridge
+  sampling, asynchronous IOHMM, multi-security portfolios, and production
+  execution modeling are excluded by the project scope. **HMC on IOHMM
+  transition logits is no longer excluded** — it ships as Gate K
+  ([`iohmm_continuous.py`](../src/hft_hmm/models/iohmm_continuous.py)) and
+  preserves the §2.5 exclusion on Θ because NUTS samples only `(W, b)`,
+  with emissions held at the Baum-Welch fit.
+- **Implementation approximation:** the headline numbers above are still
+  from the finite bucketed-transition approximation in
+  [`iohmm_approx.py`](../src/hft_hmm/models/iohmm_approx.py). The paper-
+  faithful continuous-parametric form is implemented as Gate K and run
+  side-by-side in the dedicated comparison config; its results are
+  pending the in-flight benchmark.
 - **Numerical / stochastic variation:** all runs are deterministic for the
   saved configs, but fitted HMM parameters remain sensitive to the short
   sample and to the stabilized EM settings documented in
