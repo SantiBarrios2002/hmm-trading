@@ -108,11 +108,13 @@ options being tracked.
    near-random transition matrix to the trading signal. Cheap to test
    in isolation by re-running just that window with higher
    `num_warmup` (e.g. 2000) or `target_accept_prob` (e.g. 0.95).
-2. **Bucket boundaries confound the comparison.** The bucketed variant
-   currently uses fixed boundaries rather than quantile boundaries
-   (Issue 42). On this data the fixed boundaries may happen to fall
-   in places that cleanly separate predictive regimes; against quantile
-   boundaries the bucketed advantage could shrink.
+2. **Bucket boundaries confound the comparison.** The Gate K run used
+   `boundary_mode: grid` (the config default) for the bucketed
+   baseline. Quantile boundary mode is implemented (PR #46 / Issue 42)
+   but not exercised here. On this data the grid boundaries may happen
+   to fall in places that cleanly separate predictive regimes; against
+   quantile boundaries the bucketed advantage could shrink — a
+   follow-up rerun with `boundary_mode: quantile` would isolate this.
 3. **Posterior averaging blurs an information signal.** The bucketed
    form gives a hard transition matrix per regime; the HMC form
    integrates over `(W, b)` posterior uncertainty, which softens
@@ -134,10 +136,15 @@ predictions.
 
 #### Limitations and follow-ups
 
-- The bucketed-vs-HMC comparison is not yet fair until **Issue 42**
-  (quantile bucket boundaries) is closed. Until then, part of the
-  bucketed advantage is potentially attributable to bucket-placement
-  luck rather than to a real edge for the discrete form.
+- The Gate K comparison run `d8b6e7eef6c2` used `boundary_mode: grid`
+  for the bucketed baseline (the config default), not the
+  `boundary_mode: quantile` mode that shipped via PR #46 (Issue 42).
+  Part of the bucketed advantage may therefore be attributable to
+  grid-bucket-placement luck rather than a real edge for the discrete
+  form. A follow-up run that adds `boundary_mode: quantile` to the
+  HMC comparison config — ideally producing a three-way ablation
+  (grid / quantile / HMC continuous) within one run — would clean up
+  the attribution.
 - A targeted **re-run of window 19** with bumped HMC settings would
   isolate the divergence's contribution to the HMC Sharpe.
 - A future write-up should report the full **per-window rhat / ess
@@ -272,8 +279,10 @@ levers most likely to help — based on what *didn't* work above — are:
   pick `K` by held-out predictive performance, which is the metric we
   actually care about.
 - **Smarter feature scaling and bucketing.** Quantile-based bucket
-  boundaries (Issue 42) and richer joint splines could change the IOHMM
-  conditioning result without altering the signal policy.
+  boundaries are now available (`boundary_mode: "quantile"`, shipped
+  via PR #46) but were not used in the headline run; richer joint
+  splines could change the IOHMM conditioning result without altering
+  the signal policy.
 
 None of these are scope-clean one-liners; they are issue-sized follow-ups.
 

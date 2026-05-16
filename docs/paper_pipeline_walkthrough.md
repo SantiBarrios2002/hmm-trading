@@ -117,7 +117,7 @@ Remaining gap-closing extras the doc still tracks, ranked by paper-fidelity vs c
 | **Combined vol+seasonality IOHMM** | §4 combined predictor variant (the paper does this, we don't) | ~1 week | Moderate-to-high lift expected |
 | **CV-based K selection** | §4 model-selection trio (we have 1/3) | ~1 week | Likely picks K=2 even with longer h, would invalidate the BIC=4 overfit |
 | **PLR seeding of HMM init** | §3.1 init scheme (we have PLR but don't wire it in) | ~2 days | Small, but full §3.1 fidelity |
-| **Quantile bucket boundaries** (Issue 42) | Tightens the bucketed IOHMM as the *fair baseline* for the Gate K HMC comparison; without quantile boundaries, part of any HMC win is attributable to bucket imbalance rather than continuous-parametric conditioning | ~3 days | Small on its own, but cleans up the grid-vs-continuous ablation story |
+| **Quantile-boundary rerun of the Gate K comparison** | Issue 42 *capability* shipped via PR #46 (`boundary_mode: "quantile"`); the Gate K run `d8b6e7eef6c2` still used `boundary_mode: grid`. A rerun with quantile mode would clean up the grid-vs-continuous attribution and isolate "is the bucketed advantage real, or grid-placement luck?" | ~half a day (rerun only) | Small on its own, but cleans up the negative-result story |
 | **MCMC bridge sampling for K only** | §2.5 exclusion (now partially neutralized — Gate K already delivers MCMC credibility) | 2–3 weeks | Probably picks K=2, like CV would; redundant given Gate K is in |
 | **Full MCMC on Θ** | §2.5 exclusion (the "I implemented MCMC on Θ" credential) | 3+ weeks | Negligible — Θ converges to BW result on this data |
 
@@ -555,8 +555,11 @@ Why this is an *approximation*:
 - Within a bucket all variation in `x_t` is thrown away. A "barely-low-vol"
   and a "very-low-vol" bar get treated identically.
 - The bucket boundaries are a hyperparameter — different choices give
-  different answers. Issue 42 (quantile boundaries) is on the to-do list
-  precisely so the boundaries are derived rather than chosen ad-hoc.
+  different answers. Quantile-derived boundaries are available
+  (`boundary_mode: "quantile"`, shipped via PR #46 / Issue 42); the
+  Gate K headline run used the default `boundary_mode: grid`, so a
+  follow-up rerun with quantile boundaries would isolate how much of
+  the bucketed advantage is real vs grid-placement luck.
 
 #### Continuous-parametric HMC (Gate K, `iohmm_continuous.py`)
 
