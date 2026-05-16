@@ -53,9 +53,12 @@ from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, r
 from hft_hmm.experiments.side_info_comparison import (
     BASELINE_VARIANT,
     EXPECTED_VARIANTS,
+    SEASONALITY_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_VARIANT,
     SIDE_INFO_COMPARISON_REFERENCE,
+    VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
+    ContinuousSideInfoVariantWindow,
     SideInfoComparisonArtifacts,
     SideInfoComparisonConfig,
     SideInfoComparisonResult,
@@ -89,12 +92,16 @@ from hft_hmm.features import (
 )
 from hft_hmm.inference import ForwardFilterResult, filter_from_result, forward_filter
 from hft_hmm.models import (
+    ContinuousIOHMMConfig,
+    ContinuousIOHMMResult,
     GaussianHMMResult,
     GaussianHMMWrapper,
     PLRBaselineResult,
     PLRSegment,
     PLRStateSummary,
+    fit_continuous_iohmm,
     fit_piecewise_linear_regression,
+    transition_probabilities_at,
 )
 from hft_hmm.preprocessing import compute_log_returns, resample_prices, train_test_split_time
 from hft_hmm.project import PROJECT_NAME, ProjectInfo, get_project_info
@@ -128,6 +135,7 @@ __all__ = [
     "BASELINE_VARIANT",
     "EXPECTED_VARIANTS",
     "NON_REPRODUCIBLE_WARNING",
+    "SEASONALITY_HMC_CONTINUOUS_VARIANT",
     "SEASONALITY_VARIANT",
     "SIDE_INFO_COMPARISON_REFERENCE",
     "SideInfoComparisonArtifacts",
@@ -143,6 +151,7 @@ __all__ = [
     "StandaloneRunArtifacts",
     "StandaloneWalkForwardConfig",
     "VOLATILITY_RATIO_VARIANT",
+    "VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT",
     "PAPER_FAITHFUL",
     "PROJECT_NAME",
     "SIGNAL_REFERENCE",
@@ -181,10 +190,14 @@ __all__ = [
     "compute_file_sha256",
     "compute_log_returns",
     "count_gaussian_hmm_parameters",
+    "ContinuousIOHMMConfig",
+    "ContinuousIOHMMResult",
+    "ContinuousSideInfoVariantWindow",
     "cumulative_return",
     "daily_annualized_sharpe_ratio",
     "default_labels",
     "ewma_volatility",
+    "fit_continuous_iohmm",
     "fit_piecewise_linear_regression",
     "filter_from_result",
     "forward_filter",
@@ -212,6 +225,7 @@ __all__ = [
     "thresholded_hold_signal",
     "summarize_backtest",
     "thresholded_signal",
+    "transition_probabilities_at",
     "turnover_diagnostics",
     "train_test_split_time",
     "intraday_seasonality",

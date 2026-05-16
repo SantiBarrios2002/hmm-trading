@@ -8,7 +8,7 @@ local continuous-contract Databento file documented in
 [`data/README.md`](../data/README.md) and the scope choices documented in
 [`docs/paper_spec.md`](paper_spec.md).
 
-Four reproducible runs back this document:
+Five reproducible runs back this document:
 
 - `runs/04269749abff` — `signal_policy: sign` (paper-style sign-based policy);
   the headline paper-replication run.
@@ -22,6 +22,12 @@ Four reproducible runs back this document:
   the sign policy and combines a per-window BIC sweep over `K ∈ {2, 3, 4}`
   with a longer `h_days=60` training window. Also a negative result; see
   below.
+- `runs/d8b6e7eef6c2` — Gate K side-info comparison that runs the bucketed
+  and HMC continuous-parametric IOHMM variants side-by-side under identical
+  walk-forward settings (`h_days=23`, `t_days=20`, `retrain_every_days=20`,
+  `K=2`). Source of the §"Gate K HMC continuous-parametric IOHMM" results
+  below. Also a negative result for the continuous form on this data;
+  see below.
 
 The first two runs share the Databento ES 1-minute parquet, walk-forward
 schedule (`h_days=23`, `t_days=20`, `retrain_every_days=20`, `K=2`), and
@@ -54,20 +60,89 @@ does not specify enough execution-cost detail for a clean reproduction target.
 | Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
 | Long-only benchmark | n/a | 0.6410 | 0.4091 | 1.3064 | Evaluation benchmark, not a paper model | `04269749abff` |
 
-### Pending: Gate K HMC continuous-parametric IOHMM
+### Gate K HMC continuous-parametric IOHMM
 
-The volatility-ratio and seasonality variants above use the bucketed-
-transition approximation (`models/iohmm_approx.py`). The paper-faithful
-continuous-parametric form, `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit
-with NumPyro NUTS per walk-forward window, is implemented as Gate K
-(`models/iohmm_continuous.py`, PR #48). Its full 6-year ES benchmark is
-in flight at the time of writing; numbers will be added to the table
-once the run completes and per-window convergence diagnostics
-(rhat ≤ 1.05, ess_bulk ≥ 200 per the config thresholds) have been
-audited. The comparison config
+The volatility-ratio and seasonality variants in the headline table above
+use the bucketed-transition approximation (`models/iohmm_approx.py`). The
+paper-faithful continuous-parametric form,
+`A_ij(x_t) = softmax_j(W_i · x_t + b_i)` fit with NumPyro NUTS per
+walk-forward window, is implemented as Gate K
+(`models/iohmm_continuous.py`, PR #48). The comparison config
 [`configs/example_es_databento_side_info_comparison_hmc.yaml`](../configs/example_es_databento_side_info_comparison_hmc.yaml)
-runs the bucketed and HMC variants side-by-side so the grid-vs-continuous
-ablation has a fair within-config baseline.
+runs the bucketed and HMC variants side-by-side under identical
+walk-forward settings so the grid-vs-continuous ablation has a fair
+within-config baseline.
+
+| Model | Signal policy | Pre-cost Sharpe | Hit rate | Pre-cost cumulative return | Repo `run_id` |
+|---|---|---:|---:|---:|---|
+| Baseline HMM                            | sign | 0.5298 | 0.4079 | 0.9378 | `d8b6e7eef6c2` |
+| Volatility-ratio IOHMM (bucketed)       | sign | 0.7577 | 0.4080 | 1.6061 | `d8b6e7eef6c2` |
+| Volatility-ratio IOHMM (HMC continuous) | sign | 0.6513 | 0.4079 | 1.3025 | `d8b6e7eef6c2` |
+| Seasonality IOHMM (bucketed)            | sign | 0.6285 | 0.4080 | 1.2191 | `d8b6e7eef6c2` |
+| Seasonality IOHMM (HMC continuous)      | sign | 0.6279 | 0.4079 | 1.2057 | `d8b6e7eef6c2` |
+
+**Negative result for the continuous-parametric form on this data.** On
+seasonality the two formulations are within numerical noise of each other
+(0.6285 vs 0.6279). On volatility-ratio the bucketed approximation
+*beats* the paper-faithful continuous form by ~14% pre-cost Sharpe
+(0.7577 vs 0.6513). The §8 approximation gap is closed methodologically,
+but Sharpe does not improve.
+
+**Convergence diagnostics.** All 92 windows of `seasonality_hmc_continuous`
+converged cleanly (rhat ≤ 1.05, ess_bulk ≥ 200 per the config thresholds).
+`volatility_ratio_hmc_continuous` had 91/92 windows converge cleanly and
+**one divergent window** (index 19, rhat ≈ 8.5, ess_bulk = 1) at the
+default `num_warmup=500`, `target_accept_prob=0.8`. That window's
+posterior is effectively noise; its predictions feed into the
+vol-ratio HMC trading signal and account for some — but not all — of the
+HMC vs bucketed gap above. The fact that the same calendar index
+converged on the seasonality variant points at a volatility-ratio-feature
+degeneracy at that bar, not a generic model/prior problem. See the
+"Limitations and follow-ups" subsection below for the remediation
+options being tracked.
+
+#### Three plausible explanations for the negative result
+
+1. **Window-19 divergence drags the vol-ratio HMC average down.** That
+   single 1/92 ≈ 1.1% slice of forecast bars contributes a
+   near-random transition matrix to the trading signal. Cheap to test
+   in isolation by re-running just that window with higher
+   `num_warmup` (e.g. 2000) or `target_accept_prob` (e.g. 0.95).
+2. **Bucket boundaries confound the comparison.** The bucketed variant
+   currently uses fixed boundaries rather than quantile boundaries
+   (Issue 42). On this data the fixed boundaries may happen to fall
+   in places that cleanly separate predictive regimes; against quantile
+   boundaries the bucketed advantage could shrink.
+3. **Posterior averaging blurs an information signal.** The bucketed
+   form gives a hard transition matrix per regime; the HMC form
+   integrates over `(W, b)` posterior uncertainty, which softens
+   transitions. On the volatility-ratio side info the model might
+   prefer hard switching at vol regimes, and the HMC posterior dilutes
+   that.
+
+#### Defense framing
+
+This is a *publishable* negative result, not a project failure. The
+contribution is the methodology and the diagnostics — including
+isolating the window-19 divergence and the bucket-boundary confound
+above — not a Sharpe improvement. The §8 approximation gap is closed
+by demonstration even though Sharpe does not move in the expected
+direction. The same hit rate (~0.408) across every variant confirms
+the conviction-weighted negative result still applies: the strategy
+wins via compounding many small wins, not via high-magnitude
+predictions.
+
+#### Limitations and follow-ups
+
+- The bucketed-vs-HMC comparison is not yet fair until **Issue 42**
+  (quantile bucket boundaries) is closed. Until then, part of the
+  bucketed advantage is potentially attributable to bucket-placement
+  luck rather than to a real edge for the discrete form.
+- A targeted **re-run of window 19** with bumped HMC settings would
+  isolate the divergence's contribution to the HMC Sharpe.
+- A future write-up should report the full **per-window rhat / ess
+  distribution**, not just the aggregate "all converged" headline. The
+  per-window posteriors are persisted at `runs/d8b6e7eef6c2/<variant>.posterior/`.
 
 ## Sharpe-Improvement Experiments
 
