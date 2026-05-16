@@ -38,9 +38,11 @@ import json
 import math
 import os
 import shutil
+import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final
@@ -349,6 +351,11 @@ class SideInfoComparisonConfig:
             boundary_mode=bt_raw.get("boundary_mode", "grid"),
         )
         ci_raw = raw.get("continuous_iohmm", {})
+        if not isinstance(ci_raw, Mapping):
+            raise ValueError(
+                "continuous_iohmm must be a mapping; "
+                f"got {type(ci_raw).__name__}."
+            )
         continuous_iohmm = ContinuousIOHMMConfig(
             num_chains=int(ci_raw.get("num_chains", 2)),
             num_warmup=int(ci_raw.get("num_warmup", 500)),
@@ -833,6 +840,7 @@ def _run_side_info_variant(
         nonnan_mask = feature_train.notna().to_numpy()
         decoded_aligned = decoded[nonnan_mask]
         posterior_at_train_end = _terminal_training_posterior(train_slice, fitted)
+        x_train_end = float(feature_train_clean.iloc[-1])
 
         bucketed: BucketedTransitionResult | None = None
         continuous: ContinuousIOHMMResult | None = None
@@ -844,12 +852,17 @@ def _run_side_info_variant(
                 n_states=chosen_k,
                 config=config.continuous_iohmm,
             )
+            train_end_transition = transition_probabilities_at(
+                result=continuous,
+                x_values=np.array([x_train_end], dtype=float),
+            )[0]
             expected = _dynamic_forward_expected_returns_continuous(
                 forecast_returns=effective_forecast.to_numpy(),
                 forecast_features=feature_forecast.to_numpy(),
                 fitted=fitted,
                 continuous=continuous,
                 initial_state_distribution=posterior_at_train_end,
+                initial_transition_matrix=train_end_transition,
             )
         else:
             spline_result = fit_spline_predictor(feature_train, train_slice, config=config.spline)
@@ -870,12 +883,14 @@ def _run_side_info_variant(
                 bucket_boundaries=boundaries,
                 config=bucketed_config,
             )
+            train_end_transition = bucketed.transition_matrix_for(x_train_end)
             expected = _dynamic_forward_expected_returns(
                 forecast_returns=effective_forecast.to_numpy(),
                 forecast_features=feature_forecast.to_numpy(),
                 fitted=fitted,
                 bucketed=bucketed,
                 initial_state_distribution=posterior_at_train_end,
+                initial_transition_matrix=train_end_transition,
             )
         expected_series = pd.Series(expected, index=effective_forecast.index)
 
@@ -972,12 +987,14 @@ def _run_side_info_variant(
                 f"converged={continuous.converged} "
                 f"rhat_max={_max_parameter_metric(continuous.rhat):.3f} "
                 f"ess_bulk_min={_min_parameter_metric(continuous.ess_bulk)}",
+                file=sys.stderr,
                 flush=True,
             )
         else:
             print(
                 f"[{variant}] window {window_position}/{total_windows} "
                 f"index={int(baseline_window.index)} done in {elapsed:.1f}s",
+                file=sys.stderr,
                 flush=True,
             )
 
@@ -1049,6 +1066,7 @@ def _dynamic_forward_expected_returns(
     fitted: GaussianHMMResult,
     bucketed: BucketedTransitionResult,
     initial_state_distribution: np.ndarray,
+    initial_transition_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """Run the side-info-conditioned forward filter and return E[r_{t+1}|info_t].
 
@@ -1058,7 +1076,10 @@ def _dynamic_forward_expected_returns(
     ``t`` parameterises the next transition. ``initial_state_distribution`` is
     the terminal filtering distribution from the training window, so each
     forecast window carries training history instead of restarting from the
-    fitted unconditional initial distribution.
+    fitted unconditional initial distribution. When the caller passes that
+    terminal distribution it must also supply ``initial_transition_matrix =
+    A(x_train_end)`` so the prior used for the first forecast emission
+    accounts for the jump out of the training window.
     """
     forecast_features = np.asarray(forecast_features, dtype=float)
     if forecast_features.shape != np.asarray(forecast_returns).shape:
@@ -1077,6 +1098,7 @@ def _dynamic_forward_expected_returns(
         fitted=fitted,
         transition_matrices=transition_matrices,
         initial_state_distribution=initial_state_distribution,
+        initial_transition_matrix=initial_transition_matrix,
     )
 
 
@@ -1087,6 +1109,7 @@ def _dynamic_forward_expected_returns_continuous(
     fitted: GaussianHMMResult,
     continuous: ContinuousIOHMMResult,
     initial_state_distribution: np.ndarray,
+    initial_transition_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
     """Run the continuous-IOHMM forward filter and return E[r_{t+1}|info_t]."""
     transition_matrices = transition_probabilities_at(
@@ -1098,6 +1121,7 @@ def _dynamic_forward_expected_returns_continuous(
         fitted=fitted,
         transition_matrices=transition_matrices,
         initial_state_distribution=initial_state_distribution,
+        initial_transition_matrix=initial_transition_matrix,
     )
 
 
@@ -1107,8 +1131,16 @@ def _dynamic_forward_expected_returns_from_transition_matrices(
     fitted: GaussianHMMResult,
     transition_matrices: np.ndarray,
     initial_state_distribution: np.ndarray,
+    initial_transition_matrix: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Run a forward filter using one transition matrix per forecast timestamp."""
+    """Run a forward filter using one transition matrix per forecast timestamp.
+
+    ``initial_transition_matrix`` advances ``initial_state_distribution`` by one
+    step before the first emission is consumed. Callers that pass the terminal
+    *training* filtering distribution as ``initial_state_distribution`` must
+    supply ``A(x_train_end)`` here so the prior for ``forecast_returns[0]`` is
+    ``P(z_train_end) @ A(x_train_end)`` rather than ``P(z_train_end)`` itself.
+    """
     means = fitted.means
     variances = fitted.variances
     forecast_returns = np.asarray(forecast_returns, dtype=float)
@@ -1136,6 +1168,20 @@ def _dynamic_forward_expected_returns_from_transition_matrices(
         k=k,
         name="initial_state_distribution",
     )
+    if initial_transition_matrix is not None:
+        initial_transition = np.asarray(initial_transition_matrix, dtype=float)
+        if initial_transition.shape != (k, k):
+            raise ValueError(
+                f"initial_transition_matrix must have shape ({k}, {k}), "
+                f"got {initial_transition.shape}."
+            )
+        if not np.all(np.isfinite(initial_transition)):
+            raise ValueError("initial_transition_matrix must contain only finite values.")
+        if not np.all(initial_transition >= 0.0):
+            raise ValueError("initial_transition_matrix entries must be non-negative.")
+        if not np.allclose(initial_transition.sum(axis=1), 1.0):
+            raise ValueError("initial_transition_matrix rows must sum to 1.")
+        initial_distribution = initial_distribution @ initial_transition
     centered = forecast_returns[:, None] - means[None, :]
     log_emissions = -0.5 * (
         np.log(2.0 * np.pi * variances[None, :]) + (centered * centered) / variances[None, :]
