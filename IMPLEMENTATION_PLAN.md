@@ -52,27 +52,51 @@ The repo must support the course goal of simulating some results of the paper an
   - `docs/NN-short-name`
   - `fix/NN-short-name`
 
-### 2.5 Scope exclusions and planned extensions
+### 2.5 Scope: faithful replication target + planned extensions
 
-#### Excluded by paper scope
-These parts of the original paper are intentionally out of scope for the
-coursework replication. They are listed here so the grader does not mistake
-their absence for oversight.
+The project's scope was widened on 2026-05-17 from a "targeted replication
+plus extensions" framing to a **100% paper-faithful replication plus extensions**
+framing. The original exclusions of MCMC on Θ and bridge sampling for K were
+based on the argument that "Baum-Welch and MCMC converge to the same answer";
+the paper itself (p.18) contradicts that — MCMC HMM is reported as
+*worse* than Baum-Welch on the same instrument and timeframe, and that result
+is precisely what a faithful replication should reproduce or refute on the
+local Databento ES sample.
 
-- **MCMC parameter estimation on Θ.** The paper fits Θ by both Baum-Welch and Metropolis-Hastings. This repo uses only Baum-Welch on the Gaussian HMM. For a diagonal-Gaussian HMM with K ∈ {2, 3, 4} on minute returns the likelihood is sharply concentrated, so MH and BW converge to essentially the same Θ — implementing MH adds days of compute for an answer within numerical noise of `hmmlearn`'s EM fit.
-- **MCMC bridge sampling for K selection.** The paper picks `K` using cross-validation, AIC/BIC, and marginal likelihood via bridge sampling. This repo uses only AIC/BIC. Bridge sampling would close the §4 selection trio formally but is unlikely to yield a different K than CV would.
-- **Asynchronous IOHMM.** The paper sketches an asynchronous variant for mixed-frequency inputs. This repo implements only the synchronous IOHMM approximation.
+#### Paper-faithful trading-model table (target: 6/6)
+
+The paper's headline trading-model comparison (Figure 8) lists six models. Of
+those:
+
+- ✅ **Baum-Welch HMM**, **Volatility-Ratio IOHMM**, **Seasonality IOHMM**, **Long-only** — implemented and reported in `docs/results_vs_paper.md`.
+- ❌ **Default HMM** (PLR-derived emission means + uniform transition matrix A) — *missing*, planned as Gate N.
+- ❌ **MCMC HMM** (Metropolis-Hastings on Θ) — *missing*, planned as Gate O.
+
+#### Paper-faithful K-selection trio (target: 3/3)
+
+Paper §4 picks K via three independent routes:
+
+- ✅ **AIC / BIC** — implemented; documented BIC overfit on `h_days=60` (selects K=4 in every window, Sharpe drops).
+- ❌ **Cross-validation** for K — *missing*, planned as Gate M. Expected to resolve the BIC overfit empirically.
+- ❌ **MCMC bridge sampling** for K — *missing*, planned as Gate P. Reuses MCMC HMM (Gate O) posterior samples; not a standalone MCMC build.
+
+#### Still excluded by paper scope
+These genuinely remain out of scope for the coursework replication. Listed
+here so the grader does not mistake their absence for oversight.
+
+- **Asynchronous IOHMM.** The paper sketches an asynchronous variant for mixed-frequency inputs. This repo implements only the synchronous IOHMM approximation; the project's single-frequency 1-minute ES data does not exercise the asynchronous path.
 - **Multi-security / portfolio backtest.** Evaluation is single-security (ES or an equivalent proxy). No cross-asset construction.
 - **Production execution concerns.** No latency modeling, slippage beyond a flat cost-per-turnover, venue microstructure, or order-book effects.
 
 #### Planned extensions beyond paper scope
 These are not in the paper but extend the replication along directions the
-syllabus invites (state-space ladder: HMM → Kalman / PF → DMM; EM vs. MCMC
-parameter inference). They are tracked under Gates K and L below and are
-*not* required for Gates A–J to pass.
+syllabus invites (state-space ladder: HMM → Kalman / PF → DMM; Bayesian
+inference for IOHMM transition functions).
 
-- **HMC on continuous-parametric IOHMM transitions (Gate K).** Replaces the bucketed approximation in §8 (`paper_pipeline_walkthrough.md`) with `A(x_t) = softmax(W x_t + b)` fit via NUTS in NumPyro or PyMC. Closes the bucketed-vs-continuous gap *and* delivers the Tema 2 / MCMC contribution. Distinct from "MCMC on Θ" (excluded above): HMC here samples the *transition function*, not the Gaussian HMM parameters.
+- **HMC on continuous-parametric IOHMM transitions (Gate K).** ✅ Shipped via PR #48. Replaces the bucketed approximation in §8 with `A(x_t) = softmax(W x_t + b)` fit via NUTS in NumPyro. Distinct from Gate O's "MCMC on Θ": HMC here samples the *transition function*, not the Gaussian HMM parameters. Headline result is a negative Sharpe finding; see `docs/results_vs_paper.md`.
 - **Deep Markov Model benchmark (Gate L).** Pyro-based DMM (Krishnan et al. 2017, paper PDF in `docs/`) as the nonlinear-state-space generalization of the HMM. Trained with variational inference (its native algorithm), compared against the HMM / IOHMM / HMC IOHMM variants on the same walk-forward rig.
+
+**Gates K and L are extensions; Gates M, N, O, P are faithful-replication completions.** All six (M, N, O, P, K, L) are tracked under §5 "Recommended delivery order" below.
 
 ---
 
@@ -350,9 +374,103 @@ required for Gates A–J to pass.
 
 ---
 
+## Gate M — Cross-validation for K selection (faithful replication)
+**Covers:** §2.5 paper-faithful K-selection trio. Issue and branch to be opened when work starts (suggested: `feat/NN-cv-k-selection`).
+
+Paper §4 picks K via three independent routes: cross-validation, AIC/BIC,
+and MCMC bridge sampling. The repo currently implements only AIC/BIC, and
+the BIC route exhibits a documented overfit on `h_days=60` (selects K=4 in
+every walk-forward window, Sharpe drops on every variant). This gate adds
+the missing CV route and tests whether CV resolves the BIC overfit
+empirically.
+
+### Must pass
+- A walk-forward cross-validation routine selects `K` by held-out predictive performance (per-bar log-likelihood or expected-return-aligned predictive score), wired into the existing `WalkForwardConfig.k_values` sweep so a config can specify `k_selection: cv` alongside the existing `best_by_bic` path.
+- CV is exercised on **both** the canonical `h_days=23` regime and the BIC-overfit `h_days=60` regime so the chosen-K distribution can be compared head-to-head against BIC on the same windows.
+- The selection procedure (fold count, split policy, scoring metric) is deterministic for a given seed and documented in the config and module docstring.
+- The chosen-K-per-window distribution is persisted in the run artifact alongside the existing BIC chosen-K record.
+- Tests verify the CV selector on a synthetic sequence with a known optimal K (e.g., generated from K=2 then evaluated over K ∈ {2, 3, 4}).
+
+### Evidence expected in PR review
+- Side-by-side BIC vs CV chosen-K histograms on `h_days=23` and `h_days=60`
+- Sharpe-table comparison under CV vs BIC on both training-window lengths
+- One paragraph in `docs/results_vs_paper.md` interpreting the BIC-vs-CV result (does CV pick K=2 on `h_days=60`, restoring the Sharpe?)
+
+---
+
+## Gate N — Default HMM trading variant (faithful replication)
+**Covers:** §2.5 paper-faithful trading-model table. Issue and branch to be opened when work starts (suggested: `feat/NN-default-hmm`).
+
+Paper Figure 8 includes a "Default HMM" variant — emission means derived
+from PLR segments, transition matrix `A` held at uniform `(1/K) · ones((K, K))`
+(no transition learning). The repo already implements PLR
+(`plr_baseline.py`) but does not wire it as a runnable trading variant.
+
+### Must pass
+- A `default_hmm` variant is added to the side-information comparison runner. Emission means/variances come from PLR segment statistics on the training window; `π` and `A` are uniform.
+- The variant uses the existing forward filter, signal builder, and walk-forward rig — no parallel code path.
+- The PLR seeding is deterministic for a given seed.
+- The variant is included in the headline comparison table alongside Baum-Welch HMM, vol-ratio IOHMM, seasonality IOHMM, and long-only, so the table now lists 5 of the paper's 6 models (the 6th, MCMC HMM, lands in Gate O).
+- Tests verify uniform-`A` behavior and that PLR-seeded means propagate through the variant unchanged.
+
+### Evidence expected in PR review
+- A row for `default_hmm` in `docs/results_vs_paper.md` headline table
+- One figure or short comparison showing that the Default HMM's Sharpe is the worst of the group (paper's claim, p.17), and an honest commentary if it isn't on the local sample
+
+---
+
+## Gate O — MCMC on Θ for the Gaussian HMM (faithful replication)
+**Covers:** §2.5 paper-faithful trading-model table. Issue and branch to be opened when work starts (suggested: `feat/NN-mcmc-hmm`).
+
+Paper §3 fits Θ = {π, A, μ, σ²} by Metropolis-Hastings as an alternative to
+Baum-Welch. Paper Figure 8 reports the MCMC HMM as **worse** than Baum-Welch
+(MCMC fails to beat long-only while BW does); the paper attributes this to
+prior selection and proposal-density issues. This gate replicates that
+finding (or refutes it) on the local Databento ES sample.
+
+### Must pass
+- A NumPyro Metropolis-Hastings sampler (or PyMC; same toolchain as Gate K is preferred) samples Θ = {π, A, μ, σ²} for K ∈ {2, 3} on the training window.
+- The paper's priors are followed where specified: uniform on `A` (Dirichlet with concentration 1), weakly-informative on `μ` and `σ²`. Any deviation is documented in the module docstring with the paper-page citation it replaces.
+- The point estimate retained for trading is the highest-posterior-probability sample (paper convention, p.17).
+- The variant is registered as `mcmc_hmm` in the side-information comparison runner, so the headline table reaches 6/6 paper models.
+- Convergence diagnostics (R-hat, ESS per parameter, acceptance rate) are stored per walk-forward window in the run artifact and flagged when poor.
+- The module docstring distinguishes "MCMC on Θ" (this gate) from "HMC on transition logits" (Gate K) — the two are different problems, not the same one.
+
+### Evidence expected in PR review
+- Convergence-diagnostic summary across walk-forward windows
+- A row for `mcmc_hmm` in `docs/results_vs_paper.md` headline table
+- A direct comparison of Baum-Welch Θ vs MCMC Θ on at least one window, with discussion of whether the paper's "MCMC underperforms BW" finding reproduces on the local data
+- A reproducibility check via `scripts/repro.py`
+
+---
+
+## Gate P — Bridge sampling for K selection (faithful replication)
+**Covers:** §2.5 paper-faithful K-selection trio. Issue and branch to be opened when work starts (suggested: `feat/NN-bridge-sampling`). **Depends on Gate O** — reuses MCMC HMM posterior samples.
+
+Paper §4's third K-selection route is Bayesian marginal likelihood via
+bridge sampling. With Gate O's MCMC posterior samples in hand, bridge
+sampling is a wrapper that computes the marginal likelihood `p(Y | M_k)`
+from the same chains; this gate completes the §4 K-selection trio
+(CV + AIC/BIC + bridge sampling).
+
+### Must pass
+- A bridge-sampling estimator wraps the Gate O posterior samples and produces a marginal-likelihood estimate per candidate K on each walk-forward window.
+- The estimator is tested against an analytically tractable toy model (e.g., conjugate Gaussian with a known marginal likelihood) before being applied to the HMM posterior.
+- Bridge sampling is exercised on **both** `h_days=23` and `h_days=60` so the K-selection trio (BIC vs CV vs bridge sampling) can be compared head-to-head, mirroring Gate M's evaluation regime.
+- The chosen-K distribution from bridge sampling is persisted in the run artifact alongside the existing BIC and Gate M CV records.
+
+### Evidence expected in PR review
+- Three-way K-selection comparison table (BIC vs CV vs bridge sampling) on both `h_days=23` and `h_days=60`
+- A short paragraph in `docs/results_vs_paper.md` interpreting whether all three routes agree on this data
+- A reproducibility check via `scripts/repro.py`
+
+---
+
 ## 4. Definition of done for the project
 
-The project is ready for academic submission when:
+Two tiers, reflecting the scope widening of 2026-05-17:
+
+### Minimum submittable
 
 - Gates A through F are fully passed
 - at least part of Gate G is passed
@@ -360,18 +478,33 @@ The project is ready for academic submission when:
 - Gate I is passed well enough to support the oral presentation
 - Gate J produces at least one reproduced directional claim from the paper, with an honest gap analysis
 
-A strong project should pass all gates except perhaps the "full IOHMM" variant, which is optional.
+This level corresponds to the "targeted replication" framing the project
+originally operated under. It is enough to clear the coursework brief.
 
-Gates K and L are **extensions beyond the paper scope** and are not required
-for academic submission. They strengthen the defense — Gate K supplies the
-Tema 2 MCMC contribution and Gate L positions the project on the
-state-space ladder — but the project is submittable without them.
+### 100% paper-faithful + extensions (current target)
+
+In addition to the minimum above:
+
+- **Trading-model table reaches 6/6 paper variants:** Default HMM (Gate N) and MCMC HMM (Gate O) are landed alongside the existing four.
+- **K-selection trio reaches 3/3 paper routes:** cross-validation (Gate M) and bridge sampling (Gate P) are landed alongside AIC/BIC.
+- **Extensions land in order:** Gate K (HMC IOHMM, ✅ shipped), Gate L (DMM benchmark).
+
+A strong project at this level passes every gate listed in §3 (A–P).
+
+The BIC overfit on `h_days=60` documented in `docs/results_vs_paper.md`
+should be revisited once Gates M and P land: if CV and/or bridge sampling
+pick K=2 on `h_days=60`, the negative result becomes "BIC fails on long
+windows; the paper's other two routes correctly resolve it" — a cleaner
+defense story than the current "BIC fails and we don't have the other two."
 
 ---
 
 ## 5. Recommended delivery order
 
-Recommended order for merging PRs:
+Merge order, organized by phase. Phases 1–2 are already complete; phase 3
+is the current path-B work.
+
+### Phase 1 — Replication scaffold (complete)
 
 1. Gate A
 2. Gate B
@@ -383,7 +516,30 @@ Recommended order for merging PRs:
 8. Gate H
 9. Gate I
 10. Gate J
-11. Gate K *(extension)*
-12. Gate L *(extension)*
 
-This keeps the repo academically coherent and easy to review.
+### Phase 2 — Gate K (complete)
+
+11. Gate K — HMC continuous-parametric IOHMM (✅ merged in #48; negative-result outcome documented in `docs/results_vs_paper.md`).
+
+### Phase 3 — Path B: paper-faithful completion + DMM (current)
+
+In dependency order, with each step landing as its own PR. Cross-cutting
+constraint: Gates M and P should both be exercised on `h_days=23` *and*
+`h_days=60` so the BIC overfit can be compared against CV and bridge
+sampling head-to-head on the same windows.
+
+12. **Gate M — Cross-validation for K selection** (~1 week, no dependencies). Resolves the BIC overfit empirically; standalone, no MCMC machinery needed.
+13. **Gate N — Default HMM variant** (~0.5–1 day, no dependencies). Closes the trading-table gap; can land in parallel with Gate M.
+14. **Gate O — MCMC on Θ** (~1–2 weeks, no hard dependencies but reuses NumPyro infra from Gate K). Replicates the paper's "MCMC HMM underperforms BW" finding (or refutes it on the local sample).
+15. **Gate P — Bridge sampling for K** (~0.5 week, **depends on Gate O** for posterior samples). Completes the §4 K-selection trio.
+16. **Gate L — Deep Markov Model benchmark** (~3–4 weeks, depends on nothing in path-B but typically scheduled last because it is the largest single piece of work). Closes the modern-alternative story.
+
+### Phase 3 calendar estimate
+
+At focused pace: ~6–8 weeks total. The first three items (Gates M + N + O)
+land in roughly 3 weeks; Gate P chases Gate O within a half-week; Gate L
+is the long tail.
+
+This keeps the repo academically coherent and easy to review, with each
+phase a clean "what's faithfully replicated, what extends the paper" line
+to defend.
