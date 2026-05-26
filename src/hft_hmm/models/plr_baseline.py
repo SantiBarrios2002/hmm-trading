@@ -10,7 +10,6 @@ review notes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import cache
 from typing import Final
 
 import numpy as np
@@ -199,7 +198,6 @@ def fit_piecewise_linear_regression(
     prefix_yy = _prefix_sum(values * values)
     prefix_xy = _prefix_sum(x * values)
 
-    @cache
     def interval_fit(start_idx: int, end_idx: int) -> _IntervalFit:
         n_interval = end_idx - start_idx
         sum_x = prefix_x[end_idx] - prefix_x[start_idx]
@@ -234,6 +232,39 @@ def fit_piecewise_linear_regression(
             sse=float(max(sse, 0.0)),
         )
 
+    # SSE-only inner-loop helper: avoids the per-call _IntervalFit allocation
+    # and the slope/intercept work that the DP does not consume. Inlining this
+    # (instead of caching interval_fit) keeps memory O(1) per call — the prior
+    # @cache version retained an entry per visited (start, end) pair and grew
+    # to multi-GB on full-scale 1-min training windows (n ~ 1e4-3e4).
+    # Mirrors interval_fit's math; n_interval >= min_segment_length >= 2 inside
+    # the DP, so the n==1 special case from interval_fit is unreachable here.
+    def _interval_sse(start_idx: int, end_idx: int) -> float:
+        n_interval = end_idx - start_idx
+        sum_x = prefix_x[end_idx] - prefix_x[start_idx]
+        sum_y = prefix_y[end_idx] - prefix_y[start_idx]
+        sum_xx = prefix_xx[end_idx] - prefix_xx[start_idx]
+        sum_yy = prefix_yy[end_idx] - prefix_yy[start_idx]
+        sum_xy = prefix_xy[end_idx] - prefix_xy[start_idx]
+
+        denominator = n_interval * sum_xx - sum_x * sum_x
+        if np.isclose(denominator, 0.0):
+            slope = 0.0
+            intercept = sum_y / n_interval
+        else:
+            slope = (n_interval * sum_xy - sum_x * sum_y) / denominator
+            intercept = (sum_y - slope * sum_x) / n_interval
+
+        sse = (
+            sum_yy
+            - 2.0 * intercept * sum_y
+            - 2.0 * slope * sum_xy
+            + n_interval * intercept * intercept
+            + 2.0 * intercept * slope * sum_x
+            + slope * slope * sum_xx
+        )
+        return float(max(sse, 0.0))
+
     cost = np.full((n_segments + 1, n_obs + 1), np.inf, dtype=float)
     previous_start = np.full((n_segments + 1, n_obs + 1), -1, dtype=int)
     cost[0, 0] = 0.0
@@ -251,7 +282,7 @@ def fit_piecewise_linear_regression(
                 previous_cost = cost[segment_count - 1, start_idx]
                 if not np.isfinite(previous_cost):
                     continue
-                candidate_cost = previous_cost + interval_fit(start_idx, end_idx).sse
+                candidate_cost = previous_cost + _interval_sse(start_idx, end_idx)
                 if candidate_cost < best_cost:
                     best_cost = candidate_cost
                     best_start = start_idx

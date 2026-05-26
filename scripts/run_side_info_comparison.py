@@ -3,6 +3,7 @@
 Usage:
     python scripts/run_side_info_comparison.py configs/example_es_side_info_comparison.yaml
     python scripts/run_side_info_comparison.py my_config.yaml --force --runs-root custom_runs
+    python scripts/run_side_info_comparison.py my_config.yaml --checkpoint
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from hft_hmm.experiments.side_info_comparison import (
     SideInfoComparisonConfig,
+    comparison_id,
     run_side_info_comparison,
 )
 
@@ -33,6 +35,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite an existing comparison directory with the same id.",
     )
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help=(
+            "Save per-stage checkpoints to runs_root/<cmp_id>.checkpoints/ so a "
+            "crashed run can resume by re-invoking the same command. Removed on "
+            "success."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit checkpoint directory (overrides --checkpoint default of "
+            "runs_root/<cmp_id>.checkpoints/)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.config.exists():
@@ -40,7 +60,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     config = SideInfoComparisonConfig.from_yaml(args.config)
-    artifacts = run_side_info_comparison(config, runs_root=args.runs_root, force=args.force)
+    checkpoint_dir: Path | None = args.checkpoint_dir
+    if checkpoint_dir is None and args.checkpoint:
+        checkpoint_dir = args.runs_root / f"{comparison_id(config)}.checkpoints"
+    artifacts = run_side_info_comparison(
+        config,
+        runs_root=args.runs_root,
+        force=args.force,
+        checkpoint_dir=checkpoint_dir,
+    )
     print(str(artifacts.directory))
     return 0
 

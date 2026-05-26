@@ -18,12 +18,14 @@ from hft_hmm.config.experiment_config import DataSourceConfig
 from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.experiments.side_info_comparison import (
     BASELINE_VARIANT,
+    DEFAULT_HMM_VARIANT,
     EXPECTED_VARIANTS,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_VARIANT,
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     SideInfoComparisonConfig,
+    _CHECKPOINT_BASELINE_WF,
     comparison_id,
     run_side_info_comparison,
 )
@@ -280,12 +282,13 @@ def test_quantile_boundary_mode_logs_effective_mode(
 
     artifacts = run_side_info_comparison(cfg, runs_root=tmp_path)
 
+    _no_bucket_variants = {BASELINE_VARIANT, DEFAULT_HMM_VARIANT} | HMC_VARIANTS
     for variant in EXPECTED_VARIANTS:
         records = [
             json.loads(line)
             for line in (artifacts.directory / f"{variant}.log.jsonl").read_text().splitlines()
         ]
-        if variant == BASELINE_VARIANT or variant in HMC_VARIANTS:
+        if variant in _no_bucket_variants:
             assert all("boundary_mode" not in record for record in records)
         else:
             assert {record["boundary_mode"] for record in records} == {expected_mode}
@@ -347,6 +350,131 @@ def test_force_overwrites_existing_directory(tmp_path: Path) -> None:
         run_side_info_comparison(cfg, runs_root=tmp_path)
     second = run_side_info_comparison(cfg, runs_root=tmp_path, force=True)
     assert first.directory == second.directory
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing (per-variant resume)
+# ---------------------------------------------------------------------------
+
+
+def _summary_payload(directory: Path) -> dict:
+    return json.loads((directory / "summary.json").read_text())
+
+
+def test_checkpointing_produces_identical_artifacts_and_cleans_up(tmp_path: Path) -> None:
+    cfg = _make_config()
+    reference = run_side_info_comparison(cfg, runs_root=tmp_path / "ref")
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpointed = run_side_info_comparison(
+        cfg,
+        runs_root=tmp_path / "ckpt-runs",
+        checkpoint_dir=checkpoint_dir,
+    )
+    assert _summary_payload(reference.directory) == _summary_payload(checkpointed.directory)
+    assert not checkpoint_dir.exists(), "checkpoint dir must be removed after a successful run"
+
+
+def test_checkpointing_resumes_after_simulated_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_config()
+    reference = run_side_info_comparison(cfg, runs_root=tmp_path / "ref")
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    runs_root = tmp_path / "ckpt-runs"
+
+    real_default = side_info_module._run_default_hmm_variant
+
+    def crash(**kwargs):
+        raise RuntimeError("simulated crash inside default_hmm variant")
+
+    monkeypatch.setattr(side_info_module, "_run_default_hmm_variant", crash)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_side_info_comparison(cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir)
+    monkeypatch.setattr(side_info_module, "_run_default_hmm_variant", real_default)
+
+    # Earlier stages should have been pickled; default_hmm should not be.
+    assert (checkpoint_dir / f"{_CHECKPOINT_BASELINE_WF}.pkl").is_file()
+    for variant in EXPECTED_VARIANTS:
+        path = checkpoint_dir / f"{variant}.pkl"
+        if variant == DEFAULT_HMM_VARIANT:
+            assert not path.exists()
+        else:
+            assert path.is_file()
+
+    # The first attempt aborted before any run_dir was written.
+    cmp_id = comparison_id(cfg)
+    assert not (runs_root / cmp_id).exists()
+
+    # Spy on factories: nothing already-pickled should be recomputed on resume.
+    walk_forward_calls = 0
+    real_walk_forward = side_info_module.walk_forward
+
+    def spy_walk_forward(*args, **kwargs):
+        nonlocal walk_forward_calls
+        walk_forward_calls += 1
+        return real_walk_forward(*args, **kwargs)
+
+    monkeypatch.setattr(side_info_module, "walk_forward", spy_walk_forward)
+
+    side_info_variant_calls: list[str] = []
+    real_run_side_info_variant = side_info_module._run_side_info_variant
+
+    def spy_run_side_info_variant(variant, **kwargs):
+        side_info_variant_calls.append(variant)
+        return real_run_side_info_variant(variant, **kwargs)
+
+    monkeypatch.setattr(side_info_module, "_run_side_info_variant", spy_run_side_info_variant)
+
+    default_hmm_calls = 0
+
+    def spy_run_default_hmm_variant(**kwargs):
+        nonlocal default_hmm_calls
+        default_hmm_calls += 1
+        return real_default(**kwargs)
+
+    monkeypatch.setattr(side_info_module, "_run_default_hmm_variant", spy_run_default_hmm_variant)
+
+    resumed = run_side_info_comparison(
+        cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir
+    )
+
+    assert walk_forward_calls == 0, "baseline walk_forward must be loaded from checkpoint"
+    assert side_info_variant_calls == [], (
+        f"no side-info variant should be recomputed on resume, got {side_info_variant_calls!r}"
+    )
+    assert default_hmm_calls == 1, "default_hmm was the only missing stage and must be recomputed"
+    assert not checkpoint_dir.exists()
+    assert _summary_payload(reference.directory) == _summary_payload(resumed.directory)
+
+
+def test_checkpointing_tolerates_corrupt_pickle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_config()
+    reference = run_side_info_comparison(cfg, runs_root=tmp_path / "ref")
+
+    checkpoint_dir = tmp_path / "checkpoints"
+    runs_root = tmp_path / "ckpt-runs"
+
+    real_default = side_info_module._run_default_hmm_variant
+    monkeypatch.setattr(
+        side_info_module,
+        "_run_default_hmm_variant",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+    with pytest.raises(RuntimeError, match="stop"):
+        run_side_info_comparison(cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir)
+    monkeypatch.setattr(side_info_module, "_run_default_hmm_variant", real_default)
+
+    # Corrupt one variant checkpoint — the runner should detect, drop, and recompute it.
+    (checkpoint_dir / f"{BASELINE_VARIANT}.pkl").write_bytes(b"not a real pickle")
+
+    resumed = run_side_info_comparison(
+        cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir
+    )
+    assert not checkpoint_dir.exists()
+    assert _summary_payload(reference.directory) == _summary_payload(resumed.directory)
 
 
 def test_summary_includes_required_metric_fields(comparison_artifacts) -> None:

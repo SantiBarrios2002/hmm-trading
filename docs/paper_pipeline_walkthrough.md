@@ -59,14 +59,15 @@ in [`docs/results_vs_paper.md`](results_vs_paper.md).
   - 🟡 **Bucketed-transition approximation** (`models/iohmm_approx.py`). We discretize `x_t` into 3 buckets and fit one transition matrix per bucket with smoothing toward the pooled baseline. Retained as the engineering-approximation baseline for the grid-vs-continuous comparison.
 
 ### 9. Variants tested (§4)
-- **Paper:** Baseline HMM, IOHMM-Predictor-I, IOHMM-Predictor-II, **and a combined IOHMM** that uses both predictors jointly.
+- **Paper:** Baseline HMM, IOHMM-Predictor-I, IOHMM-Predictor-II, **and a combined IOHMM** that uses both predictors jointly. Figure 8 also reports a **Default HMM** (PLR-derived emissions, uniform `A`) as the deliberately-weak floor of the trading-model comparison.
 - **Repo:**
   - ✅ Baseline HMM.
   - ✅ IOHMM with vol-ratio (bucketed).
   - ✅ IOHMM with seasonality (bucketed).
   - ✅ IOHMM with vol-ratio (HMC continuous-parametric, Gate K).
   - ✅ IOHMM with seasonality (HMC continuous-parametric, Gate K).
-  - ❌ **Combined vol+seasonality IOHMM not implemented.** Not formally excluded — just deferred for plumbing reasons (would change `EXPECTED_VARIANTS` and break existing comparison_id hashes). The single most likely change to lift Sharpe and the recommended next variant.
+  - ✅ Default HMM (`models/default_hmm.py`, Gate N) — PLR segment statistics seed the emission means/variances, `A` and `π` are held at `1/K`. Uses the shared forward filter and walk-forward rig with no parallel code path.
+  - ❌ **Combined vol+seasonality IOHMM not yet implemented**, scoped as Gate Q in `IMPLEMENTATION_PLAN.md`. Natural extension of the Gate K continuous form to vector `x_t ∈ ℝ²`; would change `EXPECTED_VARIANTS` and break existing comparison_id hashes (same cost paid by Gates K and N). Documented as the single most likely change to lift pre-cost Sharpe on this dataset.
 
 The two HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. The full 6-year ES walk-forward run completed (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for the headline numbers and the negative-result discussion.
 
@@ -114,7 +115,7 @@ Remaining gap-closing extras the doc still tracks, ranked by paper-fidelity vs c
 
 | Extra | Closes which §2.5 / paper gap? | Implementation cost | Probable Sharpe impact |
 |---|---|---|---|
-| **Combined vol+seasonality IOHMM** | §4 combined predictor variant (the paper does this, we don't) | ~1 week | Moderate-to-high lift expected |
+| **Combined vol+seasonality IOHMM** | §4 combined predictor variant; scoped as Gate Q in `IMPLEMENTATION_PLAN.md` | ~1 week | Moderate-to-high lift expected — highest documented Sharpe-flip candidate |
 | **CV-based K selection** | §4 model-selection trio (we have 1/3) | ~1 week | Likely picks K=2 even with longer h, would invalidate the BIC=4 overfit |
 | **PLR seeding of HMM init** | §3.1 init scheme (we have PLR but don't wire it in) | ~2 days | Small, but full §3.1 fidelity |
 | **Quantile-boundary rerun of the Gate K comparison** | Issue 42 *capability* shipped via PR #46 (`boundary_mode: "quantile"`); the Gate K run `d8b6e7eef6c2` still used `boundary_mode: grid`. A rerun with quantile mode would clean up the grid-vs-continuous attribution and isolate "is the bucketed advantage real, or grid-placement luck?" | ~half a day (rerun only) | Small on its own, but cleans up the negative-result story |
