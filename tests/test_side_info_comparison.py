@@ -435,14 +435,12 @@ def test_checkpointing_resumes_after_simulated_crash(
 
     monkeypatch.setattr(side_info_module, "_run_default_hmm_variant", spy_run_default_hmm_variant)
 
-    resumed = run_side_info_comparison(
-        cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir
-    )
+    resumed = run_side_info_comparison(cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir)
 
     assert walk_forward_calls == 0, "baseline walk_forward must be loaded from checkpoint"
-    assert side_info_variant_calls == [], (
-        f"no side-info variant should be recomputed on resume, got {side_info_variant_calls!r}"
-    )
+    assert (
+        side_info_variant_calls == []
+    ), f"no side-info variant should be recomputed on resume, got {side_info_variant_calls!r}"
     assert default_hmm_calls == 1, "default_hmm was the only missing stage and must be recomputed"
     assert not checkpoint_dir.exists()
     assert _summary_payload(reference.directory) == _summary_payload(resumed.directory)
@@ -470,9 +468,7 @@ def test_checkpointing_tolerates_corrupt_pickle(
     # Corrupt one variant checkpoint — the runner should detect, drop, and recompute it.
     (checkpoint_dir / f"{BASELINE_VARIANT}.pkl").write_bytes(b"not a real pickle")
 
-    resumed = run_side_info_comparison(
-        cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir
-    )
+    resumed = run_side_info_comparison(cfg, runs_root=runs_root, checkpoint_dir=checkpoint_dir)
     assert not checkpoint_dir.exists()
     assert _summary_payload(reference.directory) == _summary_payload(resumed.directory)
 
