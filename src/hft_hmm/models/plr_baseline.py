@@ -10,7 +10,6 @@ review notes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import cache
 from typing import Final
 
 import numpy as np
@@ -199,7 +198,6 @@ def fit_piecewise_linear_regression(
     prefix_yy = _prefix_sum(values * values)
     prefix_xy = _prefix_sum(x * values)
 
-    @cache
     def interval_fit(start_idx: int, end_idx: int) -> _IntervalFit:
         n_interval = end_idx - start_idx
         sum_x = prefix_x[end_idx] - prefix_x[start_idx]
@@ -234,6 +232,12 @@ def fit_piecewise_linear_regression(
             sse=float(max(sse, 0.0)),
         )
 
+    # Vectorized DP: for each end_idx we compute SSE(start, end_idx) for every
+    # valid start in one numpy op using the existing prefix sums, then combine
+    # with the previous-segment costs to pick best_start via argmin. Same math
+    # as interval_fit (the scalar version is still used for the K final
+    # segments after backtracking), just batched per end_idx so the inner work
+    # runs in compiled numpy instead of O(K*n^2) Python iterations.
     cost = np.full((n_segments + 1, n_obs + 1), np.inf, dtype=float)
     previous_start = np.full((n_segments + 1, n_obs + 1), -1, dtype=int)
     cost[0, 0] = 0.0
@@ -241,23 +245,45 @@ def fit_piecewise_linear_regression(
     for segment_count in range(1, n_segments + 1):
         min_end = segment_count * min_segment_length
         max_end = n_obs - (n_segments - segment_count) * min_segment_length
+        start_min = (segment_count - 1) * min_segment_length
+        prev_cost_row = cost[segment_count - 1]
         for end_idx in range(min_end, max_end + 1):
-            start_min = (segment_count - 1) * min_segment_length
             start_max = end_idx - min_segment_length
-            best_cost = np.inf
-            best_start = -1
+            if start_max < start_min:
+                continue
 
-            for start_idx in range(start_min, start_max + 1):
-                previous_cost = cost[segment_count - 1, start_idx]
-                if not np.isfinite(previous_cost):
-                    continue
-                candidate_cost = previous_cost + interval_fit(start_idx, end_idx).sse
-                if candidate_cost < best_cost:
-                    best_cost = candidate_cost
-                    best_start = start_idx
+            starts = np.arange(start_min, start_max + 1)
+            n_interval = (end_idx - starts).astype(float)
+            sum_x = prefix_x[end_idx] - prefix_x[starts]
+            sum_y = prefix_y[end_idx] - prefix_y[starts]
+            sum_xx = prefix_xx[end_idx] - prefix_xx[starts]
+            sum_yy = prefix_yy[end_idx] - prefix_yy[starts]
+            sum_xy = prefix_xy[end_idx] - prefix_xy[starts]
 
+            # x is np.arange(n_obs) and n_interval >= min_segment_length >= 2,
+            # so denominator = n_interval^2 (n_interval^2 - 1) / 12 is strictly
+            # positive — no degenerate-denominator branch needed here.
+            denominator = n_interval * sum_xx - sum_x * sum_x
+            slope = (n_interval * sum_xy - sum_x * sum_y) / denominator
+            intercept = (sum_y - slope * sum_x) / n_interval
+
+            sse = (
+                sum_yy
+                - 2.0 * intercept * sum_y
+                - 2.0 * slope * sum_xy
+                + n_interval * intercept * intercept
+                + 2.0 * intercept * slope * sum_x
+                + slope * slope * sum_xx
+            )
+            np.maximum(sse, 0.0, out=sse)
+
+            candidates = prev_cost_row[start_min : start_max + 1] + sse
+            best_local = int(np.argmin(candidates))
+            best_cost = float(candidates[best_local])
+            if not np.isfinite(best_cost):
+                continue
             cost[segment_count, end_idx] = best_cost
-            previous_start[segment_count, end_idx] = best_start
+            previous_start[segment_count, end_idx] = start_min + best_local
 
     if not np.isfinite(cost[n_segments, n_obs]):
         raise ValueError(

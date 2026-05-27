@@ -37,15 +37,16 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import shutil
 import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -86,6 +87,8 @@ from hft_hmm.features.splines import (
 )
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_ratio
 from hft_hmm.inference import filter_from_result
+from hft_hmm.inference.forward_filter import forward_filter
+from hft_hmm.models.default_hmm import fit_default_hmm
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BoundaryMode,
@@ -124,12 +127,14 @@ VOLATILITY_RATIO_VARIANT: Final[str] = "volatility_ratio_conditioned"
 SEASONALITY_VARIANT: Final[str] = "seasonality_conditioned"
 VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: Final[str] = "volatility_ratio_hmc_continuous"
 SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "seasonality_hmc_continuous"
+DEFAULT_HMM_VARIANT: Final[str] = "default_hmm"
 EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     BASELINE_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     SEASONALITY_VARIANT,
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    DEFAULT_HMM_VARIANT,
 )
 _SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
     VOLATILITY_RATIO_VARIANT,
@@ -639,16 +644,28 @@ class SideInfoComparisonArtifacts:
 # ---------------------------------------------------------------------------
 
 
+_CHECKPOINT_BASELINE_WF: Final[str] = "baseline_wf"
+_T = TypeVar("_T")
+
+
 def run_side_info_comparison(
     config: SideInfoComparisonConfig,
     *,
     runs_root: Path | str = Path("runs"),
     force: bool = False,
+    checkpoint_dir: Path | str | None = None,
 ) -> SideInfoComparisonArtifacts:
     """Execute the comparison described by ``config`` and write artifacts.
 
     Target directory is ``runs_root / comparison_id(config)``; ``force=True``
     replaces an existing directory atomically (with rollback on failure).
+
+    When ``checkpoint_dir`` is provided, each stage (baseline walk-forward plus
+    each of the six variants) is pickled to that directory on completion. On a
+    subsequent invocation with the same ``checkpoint_dir``, already-completed
+    stages are loaded from disk instead of recomputed, so a crash mid-run only
+    costs the in-progress variant. The directory is removed once the final
+    artifact write succeeds.
 
     References: §4 side-information IOHMM comparison (evaluation layer)
     """
@@ -663,40 +680,84 @@ def run_side_info_comparison(
             f"Comparison directory already exists at {run_dir}; pass force=True to overwrite."
         )
 
+    checkpoint_path = Path(checkpoint_dir) if checkpoint_dir is not None else None
+    if checkpoint_path is not None:
+        checkpoint_path.mkdir(parents=True, exist_ok=True)
+
     reproducible = validate_data_reproducibility(config, stacklevel=3)
     returns = load_returns_from_source(config.data, frequency=config.frequency)
 
-    baseline_wf = walk_forward(
-        returns,
-        config.walk_forward,
-        cost_bps_per_turnover=config.cost_bps_per_turnover,
-        signal_policy=config.signal_policy,
-        signal_threshold=config.signal_threshold,
+    baseline_wf = _checkpointed_stage(
+        _CHECKPOINT_BASELINE_WF,
+        checkpoint_path,
+        expected_type=WalkForwardResult,
+        factory=lambda: walk_forward(
+            returns,
+            config.walk_forward,
+            cost_bps_per_turnover=config.cost_bps_per_turnover,
+            signal_policy=config.signal_policy,
+            signal_threshold=config.signal_threshold,
+        ),
     )
-    baseline_variant = _build_baseline_variant(baseline_wf, config.cost_bps_per_turnover)
-    vol_variant = _run_side_info_variant(
+    baseline_variant = _checkpointed_stage(
+        BASELINE_VARIANT,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _build_baseline_variant(baseline_wf, config.cost_bps_per_turnover),
+    )
+    vol_variant = _checkpointed_stage(
         VOLATILITY_RATIO_VARIANT,
-        returns=returns,
-        config=config,
-        baseline_windows=baseline_wf.windows,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_side_info_variant(
+            VOLATILITY_RATIO_VARIANT,
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
     )
-    seasonality_variant = _run_side_info_variant(
+    seasonality_variant = _checkpointed_stage(
         SEASONALITY_VARIANT,
-        returns=returns,
-        config=config,
-        baseline_windows=baseline_wf.windows,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_side_info_variant(
+            SEASONALITY_VARIANT,
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
     )
-    vol_hmc_variant = _run_side_info_variant(
+    vol_hmc_variant = _checkpointed_stage(
         VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
-        returns=returns,
-        config=config,
-        baseline_windows=baseline_wf.windows,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_side_info_variant(
+            VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
     )
-    seasonality_hmc_variant = _run_side_info_variant(
+    seasonality_hmc_variant = _checkpointed_stage(
         SEASONALITY_HMC_CONTINUOUS_VARIANT,
-        returns=returns,
-        config=config,
-        baseline_windows=baseline_wf.windows,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_side_info_variant(
+            SEASONALITY_HMC_CONTINUOUS_VARIANT,
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
+    )
+    default_hmm_variant = _checkpointed_stage(
+        DEFAULT_HMM_VARIANT,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_default_hmm_variant(
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
     )
 
     result = SideInfoComparisonResult(
@@ -708,6 +769,7 @@ def run_side_info_comparison(
             SEASONALITY_VARIANT: seasonality_variant,
             VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: vol_hmc_variant,
             SEASONALITY_HMC_CONTINUOUS_VARIANT: seasonality_hmc_variant,
+            DEFAULT_HMM_VARIANT: default_hmm_variant,
         },
     )
 
@@ -732,12 +794,79 @@ def run_side_info_comparison(
             shutil.rmtree(staging_dir, ignore_errors=True)
         raise
 
+    if checkpoint_path is not None and checkpoint_path.exists():
+        shutil.rmtree(checkpoint_path, ignore_errors=True)
+
     return SideInfoComparisonArtifacts(
         comparison_id=cmp_id,
         directory=run_dir,
         config=config,
         result=result,
     )
+
+
+def _checkpointed_stage(
+    name: str,
+    checkpoint_dir: Path | None,
+    *,
+    expected_type: type[_T],
+    factory: Callable[[], _T],
+) -> _T:
+    """Load ``name`` from ``checkpoint_dir`` if present; otherwise compute and save it.
+
+    When ``checkpoint_dir`` is ``None`` this is a transparent passthrough to
+    ``factory()`` — the existing behavior of ``run_side_info_comparison`` is
+    preserved bit-for-bit.
+
+    The on-disk format is a plain pickle file at
+    ``{checkpoint_dir}/{name}.pkl``. Writes are atomic (write to ``.tmp`` then
+    ``os.replace``) so a crash mid-write does not leave a partial file. Reads
+    that fail (unpicklable, wrong type, truncated) are treated as a missing
+    checkpoint: the file is removed and the stage is recomputed.
+    """
+    if checkpoint_dir is None:
+        return factory()
+    target = checkpoint_dir / f"{name}.pkl"
+    if target.is_file():
+        try:
+            with target.open("rb") as handle:
+                payload = pickle.load(handle)
+        except Exception as exc:
+            print(
+                f"[checkpoint] {name}: failed to load ({exc!r}); recomputing",
+                file=sys.stderr,
+                flush=True,
+            )
+            target.unlink(missing_ok=True)
+        else:
+            if isinstance(payload, expected_type):
+                print(
+                    f"[checkpoint] {name}: loaded from {target}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return payload
+            print(
+                f"[checkpoint] {name}: pickle at {target} is "
+                f"{type(payload).__name__}, expected {expected_type.__name__}; "
+                "recomputing",
+                file=sys.stderr,
+                flush=True,
+            )
+            target.unlink(missing_ok=True)
+
+    print(f"[checkpoint] {name}: computing", file=sys.stderr, flush=True)
+    value = factory()
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with tmp.open("wb") as handle:
+            pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    print(f"[checkpoint] {name}: saved to {target}", file=sys.stderr, flush=True)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1136,135 @@ def _run_side_info_variant(
 
     return SideInfoVariantResult(
         variant=variant,
+        chosen_k_per_window=tuple(chosen_ks),
+        windows=tuple(windows),
+        signal=combined_signal,
+        pre_cost_returns=pre_cost_returns,
+        post_cost_returns=post_cost_returns,
+        summary=summary,
+        cost_bps_per_turnover=float(cost),
+    )
+
+
+def _run_default_hmm_variant(
+    *,
+    returns: pd.Series,
+    config: SideInfoComparisonConfig,
+    baseline_windows: tuple[WalkForwardWindow, ...],
+) -> SideInfoVariantResult:
+    """Run the Default HMM variant on the same windows as the baseline.
+
+    Emission means/variances come from PLR segment statistics on the training
+    window; A = (1/K)·ones((K,K)) and π = ones(K)/K are uniform throughout.
+    The fixed-A forward filter (``hft_hmm.inference.forward_filter``) produces
+    per-bar expected returns, which are passed to the shared signal builder.
+
+    References: Figure 8 / §3 Default HMM (paper-faithful)
+    """
+    cost = config.cost_bps_per_turnover
+    wf = config.walk_forward
+    bar_dates = returns.index.date
+
+    windows: list[WalkForwardWindow] = []
+    signal_parts: list[pd.Series] = []
+    pre_cost_parts: list[pd.Series] = []
+    post_cost_parts: list[pd.Series] = []
+    chosen_ks: list[int] = []
+    initial_position = 0
+    total_windows = len(baseline_windows)
+
+    for window_position, baseline_window in enumerate(baseline_windows, start=1):
+        window_start_time = time.monotonic()
+        train_mask = (bar_dates >= baseline_window.train_start.date()) & (
+            bar_dates <= baseline_window.train_end.date()
+        )
+        train_slice = returns.loc[train_mask]
+        effective_forecast = returns.loc[
+            baseline_window.forecast_start : baseline_window.forecast_end
+        ]
+        if effective_forecast.shape[0] < 2:
+            raise ValueError(
+                "each effective forecast window must contain at least 2 observations; "
+                f"window {baseline_window.index} has {effective_forecast.shape[0]}."
+            )
+
+        chosen_k = int(baseline_window.chosen_k)
+        fitted = fit_default_hmm(
+            train_slice,
+            n_states=chosen_k,
+            min_variance=wf.min_variance,
+        )
+
+        filter_result = forward_filter(effective_forecast, fitted)
+        expected_series = pd.Series(
+            filter_result.expected_next_returns, index=effective_forecast.index
+        )
+
+        signal_scale: float | None = None
+        if config.signal_policy == "conviction_weighted":
+            train_filter = forward_filter(train_slice, fitted)
+            signal_scale = conviction_scale_from_train_predictions(
+                train_filter.expected_next_returns
+            )
+
+        window_signal = build_signal(
+            expected_series,
+            policy=config.signal_policy,
+            threshold=config.signal_threshold,
+            initial_position=initial_position,
+            scale=signal_scale,
+        )
+        if config.signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
+        window_pre_cost = align_signal_with_future_return(window_signal, effective_forecast)
+        window_post_cost = apply_turnover_cost(
+            window_pre_cost,
+            signal_turnover(window_signal),
+            cost_bps_per_turnover=cost,
+        )
+        window_summary = _summarize_return_modes(
+            window_pre_cost, window_post_cost, cost_bps_per_turnover=cost
+        )
+
+        signal_parts.append(window_signal)
+        pre_cost_parts.append(window_pre_cost)
+        post_cost_parts.append(window_post_cost)
+        chosen_ks.append(chosen_k)
+        windows.append(
+            WalkForwardWindow(
+                index=int(baseline_window.index),
+                train_start=train_slice.index.min(),
+                train_end=train_slice.index.max(),
+                forecast_start=effective_forecast.index.min(),
+                forecast_end=effective_forecast.index.max(),
+                chosen_k=chosen_k,
+                log_likelihood=fitted.log_likelihood,
+                n_train_obs=int(train_slice.shape[0]),
+                n_forecast_obs=int(effective_forecast.shape[0]),
+                summary=window_summary,
+            )
+        )
+
+        elapsed = time.monotonic() - window_start_time
+        print(
+            f"[{DEFAULT_HMM_VARIANT}] window {window_position}/{total_windows} "
+            f"index={int(baseline_window.index)} done in {elapsed:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    combined_signal = pd.concat(signal_parts)
+    if config.signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
+    combined_signal.name = "signal"
+    pre_cost_returns = pd.concat(pre_cost_parts)
+    post_cost_returns = pd.concat(post_cost_parts)
+    summary = _summarize_return_modes(
+        pre_cost_returns, post_cost_returns, cost_bps_per_turnover=cost
+    )
+
+    return SideInfoVariantResult(
+        variant=DEFAULT_HMM_VARIANT,
         chosen_k_per_window=tuple(chosen_ks),
         windows=tuple(windows),
         signal=combined_signal,

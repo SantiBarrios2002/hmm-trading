@@ -21,6 +21,11 @@ from hft_hmm.models.plr_baseline import (
     fit_piecewise_linear_regression,
 )
 
+# Note: ``default_hmm`` is intentionally not re-exported here. It imports
+# ``hft_hmm.inference.forward_filter``, which in turn imports
+# ``hft_hmm.models.gaussian_hmm`` — eagerly exposing ``default_hmm`` at
+# package-import time creates a circular import. Import it directly via
+# ``from hft_hmm.models.default_hmm import fit_default_hmm``.
 from . import gaussian_hmm, iohmm_approx, iohmm_continuous, plr_baseline
 
 __all__ = [

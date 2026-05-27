@@ -55,6 +55,7 @@ does not specify enough execution-cost detail for a clean reproduction target.
 | Baseline HMM | sign | 0.5298 | 0.4079 | 0.9378 | §3 baseline HMM; §4.4 comparison context | `04269749abff` |
 | Volatility-ratio IOHMM | sign | 0.7577 | 0.4080 | 1.6061 | §4.2 Predictor I; §4.4 IOHMM comparison | `04269749abff` |
 | Seasonality IOHMM | sign | 0.6285 | 0.4080 | 1.2191 | §4.2 Predictor II; §4.4 IOHMM comparison | `04269749abff` |
+| Default HMM | sign | -0.1132 | 0.4038 | -0.1374 | §3 Default HMM; PLR emissions, uniform A/π (Gate N) | `d8b6e7eef6c2` |
 | Baseline HMM | thresholded_hold (1.7e-6) | 0.2264 | 0.4073 | 0.3396 | §3 baseline HMM, turnover-aware variant | `f7af264b0da4` |
 | Volatility-ratio IOHMM | thresholded_hold (1.7e-6) | 0.2819 | 0.4074 | 0.4385 | §4.2 Predictor I, turnover-aware variant | `f7af264b0da4` |
 | Seasonality IOHMM | thresholded_hold (1.7e-6) | 0.1316 | 0.4071 | 0.1862 | §4.2 Predictor II, turnover-aware variant | `f7af264b0da4` |
@@ -271,9 +272,11 @@ defaults survive ablation rather than reflecting an arbitrary choice.
 If a future PR wants to push pre-cost Sharpe further on this dataset, the
 levers most likely to help — based on what *didn't* work above — are:
 
-- **Combined vol-ratio + seasonality IOHMM** (deferred for plumbing reasons,
-  see below). The two predictors are individually useful; their joint
-  bucketing might capture cross-effects that the independent variants miss.
+- **Combined vol-ratio + seasonality IOHMM** (scoped as Gate Q in
+  `IMPLEMENTATION_PLAN.md`). The two predictors are individually useful;
+  joint conditioning of the transition softmax on `x_t ∈ ℝ²` may capture
+  cross-effects that the independent variants miss. Documented here as
+  the single most likely change to lift pre-cost Sharpe on this dataset.
 - **Cross-validation `K` selection instead of BIC.** The §4 paper compares
   CV, AIC/BIC, and MCMC bridge sampling; we only implement BIC. CV would
   pick `K` by held-out predictive performance, which is the metric we
@@ -296,13 +299,13 @@ None of these are scope-clean one-liners; they are issue-sized follow-ups.
   spline knots, and vol-ratio EWMA parameters are kept at the headline values
   so the Sharpe lift is attributable to the signal/selection changes rather
   than to a feature-engineering sweep.
-- **A combined vol-ratio + seasonality IOHMM variant is deliberately deferred.**
-  The 3-variant `EXPECTED_VARIANTS` schema in
-  [`side_info_comparison.py`](../src/hft_hmm/experiments/side_info_comparison.py)
-  is load-bearing for existing comparison_id hashes and tests; adding a 4th
-  variant would either change every existing comparison hash or require
-  duplicating ~300 LOC of plumbing in a parallel module. Deferred to a
-  follow-up.
+- **A combined vol-ratio + seasonality IOHMM variant is scoped as Gate Q**
+  in `IMPLEMENTATION_PLAN.md` but not implemented this round. Each
+  `EXPECTED_VARIANTS` change invalidates existing comparison_id hashes and
+  forces a headline rerun; Gates K and N have already paid this cost twice,
+  and Gate Q will be the third (and likely final) such change. Tracked
+  separately so the Sharpe-improvement experiments in this section stay
+  attributable to signal/selection choices, not to a new model variant.
 
 ## Post-Cost Diagnostic
 
