@@ -17,6 +17,7 @@ import pytest
 from hft_hmm.config.experiment_config import DataSourceConfig
 from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.experiments.side_info_comparison import (
+    _CHECKPOINT_BASELINE_WF,
     BASELINE_VARIANT,
     DEFAULT_HMM_VARIANT,
     EXPECTED_VARIANTS,
@@ -25,7 +26,6 @@ from hft_hmm.experiments.side_info_comparison import (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     SideInfoComparisonConfig,
-    _CHECKPOINT_BASELINE_WF,
     comparison_id,
     run_side_info_comparison,
 )

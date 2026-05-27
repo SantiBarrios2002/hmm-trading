@@ -26,8 +26,7 @@ pip install -r requirements.txt
 
 echo "[remote] swapping CPU jax for CUDA 12 build"
 pip uninstall -y jax jaxlib >/dev/null 2>&1 || true
-pip install --upgrade "jax[cuda12]" \
-  -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install --upgrade "jax[cuda12]"
 
 echo "[remote] sanity-check: jax devices"
 python - <<'PY'

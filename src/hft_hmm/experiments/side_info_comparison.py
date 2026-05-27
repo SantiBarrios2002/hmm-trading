@@ -858,9 +858,13 @@ def _checkpointed_stage(
     print(f"[checkpoint] {name}: computing", file=sys.stderr, flush=True)
     value = factory()
     tmp = target.with_suffix(target.suffix + ".tmp")
-    with tmp.open("wb") as handle:
-        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, target)
+    try:
+        with tmp.open("wb") as handle:
+            pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     print(f"[checkpoint] {name}: saved to {target}", file=sys.stderr, flush=True)
     return value
 

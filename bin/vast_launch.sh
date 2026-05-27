@@ -45,7 +45,7 @@ rsync -avz --progress \
   "${REMOTE}:${REMOTE_DIR}/data/databento/databento/"
 
 echo "[3/4] running remote setup + starting tmux session 'hmc'"
-"${SSH[@]}" "bash -lc 'cd ${REMOTE_DIR} && CONFIG_PATH=${CONFIG} bash bin/vast_remote_setup.sh'"
+"${SSH[@]}" "bash -lc 'cd ${REMOTE_DIR} && CONFIG_PATH=\"${CONFIG}\" bash bin/vast_remote_setup.sh'"
 
 echo "[4/4] done. job is detached in tmux session 'hmc'."
 cat <<EOF
