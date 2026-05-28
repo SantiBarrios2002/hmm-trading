@@ -23,8 +23,10 @@ from hft_hmm.experiments.side_info_comparison import (
     EXPECTED_VARIANTS,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_VARIANT,
+    VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
+    ContinuousSideInfoVariantWindow,
     SideInfoComparisonConfig,
     comparison_id,
     run_side_info_comparison,
@@ -44,9 +46,13 @@ FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
 FIXTURE_SHA256 = "c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_side_info_comparison.yaml"
 EXAMPLE_HMC_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_hmc.yaml"
+EXAMPLE_COMBINED_CONFIG = (
+    REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_combined.yaml"
+)
 HMC_VARIANTS = {
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
 }
 BUCKETED_VARIANTS = {
     VOLATILITY_RATIO_VARIANT,
@@ -135,6 +141,17 @@ def test_hmc_example_config_round_trips() -> None:
     assert "continuous_iohmm" in raw
     assert cfg.continuous_iohmm.num_chains == 2
     assert cfg.continuous_iohmm.num_samples == 1000
+    assert SideInfoComparisonConfig.from_dict(raw) == cfg
+
+
+def test_combined_example_config_round_trips() -> None:
+    cfg = SideInfoComparisonConfig.from_yaml(EXAMPLE_COMBINED_CONFIG)
+    raw = cfg.to_dict()
+
+    assert "combined" in cfg.notes
+    assert cfg.continuous_iohmm.num_warmup == 500
+    assert cfg.continuous_iohmm.num_samples == 1000
+    assert cfg.walk_forward.h_days == 23
     assert SideInfoComparisonConfig.from_dict(raw) == cfg
 
 
@@ -313,6 +330,16 @@ def test_hmc_variant_logs_diagnostics_without_bucket_fields(comparison_artifacts
             assert "boundary_mode" not in record
 
 
+def test_combined_hmc_variant_runs_with_two_feature_coefficients(comparison_artifacts) -> None:
+    result = comparison_artifacts.result.variants[VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT]
+    assert result.windows
+    first_window = result.windows[0]
+    assert isinstance(first_window, ContinuousSideInfoVariantWindow)
+    assert first_window.posterior_mean_W.shape == (first_window.chosen_k, first_window.chosen_k, 2)
+    assert first_window.posterior_samples["W"].shape[-1] == 2
+    assert np.all(np.isfinite(first_window.posterior_mean_W))
+
+
 def test_hmc_variant_persists_posterior_samples_npz(comparison_artifacts) -> None:
     for variant in HMC_VARIANTS:
         posterior_dir = comparison_artifacts.directory / f"{variant}.posterior"
@@ -330,8 +357,8 @@ def test_hmc_variant_persists_posterior_samples_npz(comparison_artifacts) -> Non
             with np.load(path) as data:
                 w = data["W"]
                 b = data["b"]
-            assert w.ndim == 4 and w.shape[2] == w.shape[3] >= 2
-            assert b.shape == w.shape
+            assert w.ndim == 5 and w.shape[2] == w.shape[3] >= 2 and w.shape[4] >= 1
+            assert b.shape == w.shape[:4]
             assert np.all(np.isfinite(w))
             assert np.all(np.isfinite(b))
 

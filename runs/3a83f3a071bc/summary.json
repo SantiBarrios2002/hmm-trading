@@ -1,0 +1,334 @@
+{
+  "comparison_id": "3a83f3a071bc",
+  "cost_bps_per_turnover": 1.0,
+  "frequency": "1min",
+  "metric_interpretation": {
+    "post-cost": "cost-sensitivity diagnostic under the repo's linear turnover cost convention; not calibrated to the paper's unspecified execution model",
+    "pre-cost": "primary academic signal-quality metric for paper comparison; no execution costs applied"
+  },
+  "reproducible": true,
+  "variants": {
+    "baseline": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -8.85598232,
+        "pre-cost": 8.41723827,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.04627722,
+          "hit_rate": 0.43059126,
+          "max_drawdown": -0.0616484,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.025903
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": 0.02348939,
+          "hit_rate": 0.43912129,
+          "max_drawdown": -0.0087232,
+          "n_periods": 8558.0,
+          "sharpe_ratio": 0.0128981
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.06976661,
+        "mean_holding_periods": 24.11267606,
+        "mean_turnover_per_period": 0.08271994,
+        "position_change_count": 354,
+        "total_turnover": 708.0
+      },
+      "variant": "baseline"
+    },
+    "default_hmm": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -0.70600015,
+        "pre-cost": -0.70600015,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.00285953,
+          "hit_rate": 0.4342136,
+          "max_drawdown": -0.0307284,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.00159069
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": -0.00285953,
+          "hit_rate": 0.4342136,
+          "max_drawdown": -0.0307284,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.00159069
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.0,
+        "mean_holding_periods": 4280.0,
+        "mean_turnover_per_period": 0.00023367,
+        "position_change_count": 1,
+        "total_turnover": 2.0
+      },
+      "variant": "default_hmm"
+    },
+    "seasonality_conditioned": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -6.15265194,
+        "pre-cost": 8.03221686,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.02495795,
+          "hit_rate": 0.4344473,
+          "max_drawdown": -0.04097257,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.01390343
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": 0.02278093,
+          "hit_rate": 0.44075719,
+          "max_drawdown": -0.01092241,
+          "n_periods": 8558.0,
+          "sharpe_ratio": 0.01251337
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.04773888,
+        "mean_holding_periods": 35.5186722,
+        "mean_turnover_per_period": 0.05608132,
+        "position_change_count": 240,
+        "total_turnover": 480.0
+      },
+      "variant": "seasonality_conditioned"
+    },
+    "seasonality_hmc_continuous": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -7.44048346,
+        "pre-cost": 1.88029633,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.03733675,
+          "hit_rate": 0.43246086,
+          "max_drawdown": -0.05448469,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.02085947
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": 0.00576494,
+          "hit_rate": 0.43853704,
+          "max_drawdown": -0.01916087,
+          "n_periods": 8558.0,
+          "sharpe_ratio": 0.00319313
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.04310169,
+        "mean_holding_periods": 38.73303167,
+        "mean_turnover_per_period": 0.05140787,
+        "position_change_count": 220,
+        "total_turnover": 440.0
+      },
+      "variant": "seasonality_hmc_continuous"
+    },
+    "vol_ratio_seasonality_hmc_continuous": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -12.00015768,
+        "pre-cost": -0.88035908,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.1127119,
+          "hit_rate": 0.41902314,
+          "max_drawdown": -0.12695927,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.06444125
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": -0.0025822,
+          "hit_rate": 0.43573265,
+          "max_drawdown": -0.02404665,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.00143622
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.11012969,
+        "mean_holding_periods": 14.58262351,
+        "mean_turnover_per_period": 0.13693188,
+        "position_change_count": 586,
+        "total_turnover": 1172.0
+      },
+      "variant": "vol_ratio_seasonality_hmc_continuous"
+    },
+    "volatility_ratio_conditioned": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -7.42991821,
+        "pre-cost": 6.55695772,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.03593064,
+          "hit_rate": 0.4330451,
+          "max_drawdown": -0.05127085,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.02007933
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": 0.02102596,
+          "hit_rate": 0.43935499,
+          "max_drawdown": -0.01040749,
+          "n_periods": 8558.0,
+          "sharpe_ratio": 0.0115592
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.0569566,
+        "mean_holding_periods": 29.61937716,
+        "mean_turnover_per_period": 0.06729758,
+        "position_change_count": 288,
+        "total_turnover": 576.0
+      },
+      "variant": "volatility_ratio_conditioned"
+    },
+    "volatility_ratio_hmc_continuous": {
+      "chosen_k_per_window": [
+        2,
+        2
+      ],
+      "comparison_id": "3a83f3a071bc",
+      "cost_bps_per_turnover": 1.0,
+      "daily_annualized_sharpe": {
+        "method": "sum intraday returns by UTC date, then scale daily Sharpe by sqrt(258)",
+        "post-cost": -13.50508841,
+        "pre-cost": -1.29464118,
+        "trading_days_per_year": 258.0
+      },
+      "n_forecast_obs": 8558,
+      "n_windows": 2,
+      "sample_window": {
+        "end": "2024-01-29T21:15:00+00:00",
+        "start": "2024-01-16T07:01:00+00:00"
+      },
+      "summary": {
+        "post-cost": {
+          "cost_bps_per_turnover": 1.0,
+          "cumulative_return": -0.23819294,
+          "hit_rate": 0.3900444,
+          "max_drawdown": -0.25069898,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.14295752
+        },
+        "pre-cost": {
+          "cost_bps_per_turnover": 0.0,
+          "cumulative_return": -0.0046511,
+          "hit_rate": 0.43666745,
+          "max_drawdown": -0.02189181,
+          "n_periods": 8558.0,
+          "sharpe_ratio": -0.00258964
+        }
+      },
+      "turnover_diagnostics": {
+        "cost_drag_cumulative_return": 0.23354183,
+        "mean_holding_periods": 6.39760837,
+        "mean_turnover_per_period": 0.31241968,
+        "position_change_count": 1337,
+        "total_turnover": 2674.0
+      },
+      "variant": "volatility_ratio_hmc_continuous"
+    }
+  }
+}

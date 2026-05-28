@@ -29,6 +29,11 @@ Five reproducible runs back this document:
   below. Also a negative result for the continuous form on this data;
   see below.
 
+Gate Q now lands the combined volatility-ratio plus seasonality HMC
+continuous-parametric IOHMM capability. Its full 6-year headline Sharpe rerun
+is tracked separately; the table below includes a `TBD` placeholder row until
+that compute artifact is produced.
+
 The first two runs share the Databento ES 1-minute parquet, walk-forward
 schedule (`h_days=23`, `t_days=20`, `retrain_every_days=20`, `K=2`), and
 `cost_bps_per_turnover=1.0`. Configs:
@@ -81,6 +86,11 @@ within-config baseline.
 | Volatility-ratio IOHMM (HMC continuous) | sign | 0.6513 | 0.4079 | 1.3025 | `d8b6e7eef6c2` |
 | Seasonality IOHMM (bucketed)            | sign | 0.6285 | 0.4080 | 1.2191 | `d8b6e7eef6c2` |
 | Seasonality IOHMM (HMC continuous)      | sign | 0.6279 | 0.4079 | 1.2057 | `d8b6e7eef6c2` |
+| Combined vol-ratio + seasonality IOHMM (HMC continuous) | sign | TBD | TBD | TBD | `TBD` |
+
+The combined HMC row is a Gate Q capability placeholder. The implementation is
+landed with `W ∈ ℝ^{K×K×2}` and leakage-free per-feature standardization; the
+headline Databento rerun is a separate long compute job.
 
 **Negative result for the continuous-parametric form on this data.** On
 seasonality the two formulations are within numerical noise of each other
@@ -299,13 +309,12 @@ None of these are scope-clean one-liners; they are issue-sized follow-ups.
   spline knots, and vol-ratio EWMA parameters are kept at the headline values
   so the Sharpe lift is attributable to the signal/selection changes rather
   than to a feature-engineering sweep.
-- **A combined vol-ratio + seasonality IOHMM variant is scoped as Gate Q**
-  in `IMPLEMENTATION_PLAN.md` but not implemented this round. Each
-  `EXPECTED_VARIANTS` change invalidates existing comparison_id hashes and
-  forces a headline rerun; Gates K and N have already paid this cost twice,
-  and Gate Q will be the third (and likely final) such change. Tracked
-  separately so the Sharpe-improvement experiments in this section stay
-  attributable to signal/selection choices, not to a new model variant.
+- **The combined vol-ratio + seasonality IOHMM variant is now landed as a
+  Gate Q capability.** The `EXPECTED_VARIANTS` change invalidates existing
+  comparison_id hashes and forces a headline rerun; that long Databento compute
+  run is tracked separately so the Sharpe-improvement experiments in this
+  section stay attributable to signal/selection choices, not to the new model
+  variant.
 
 ## Post-Cost Diagnostic
 

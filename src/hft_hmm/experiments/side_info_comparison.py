@@ -1,6 +1,6 @@
-"""Gate H/K side-information comparison experiment.
+"""Gate H/K/Q side-information comparison experiment.
 
-Runs five walk-forward variants on the same return series with the same
+Runs side-information walk-forward variants on the same return series with the same
 window geometry, K selection, cost model, and reporting units, so the
 variants are directly comparable on pre-cost signal quality:
 
@@ -16,6 +16,9 @@ variants are directly comparable on pre-cost signal quality:
    ``seasonality_hmc_continuous`` — Gate K continuous-parametric IOHMM
    transition functions, fit per window with NumPyro NUTS on decoded training
    states while holding Baum-Welch emissions fixed.
+5. ``vol_ratio_seasonality_hmc_continuous`` — Gate Q combined-predictor
+   continuous-parametric IOHMM using volatility-ratio and intraday-seasonality
+   side information jointly.
 
 The IOHMM-style conditioning is the engineering approximation from
 ``hft_hmm.models.iohmm_approx``: a bucket index is derived from the
@@ -127,6 +130,7 @@ VOLATILITY_RATIO_VARIANT: Final[str] = "volatility_ratio_conditioned"
 SEASONALITY_VARIANT: Final[str] = "seasonality_conditioned"
 VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: Final[str] = "volatility_ratio_hmc_continuous"
 SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "seasonality_hmc_continuous"
+VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "vol_ratio_seasonality_hmc_continuous"
 DEFAULT_HMM_VARIANT: Final[str] = "default_hmm"
 EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     BASELINE_VARIANT,
@@ -134,6 +138,7 @@ EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     SEASONALITY_VARIANT,
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
     DEFAULT_HMM_VARIANT,
 )
 _SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
@@ -141,10 +146,12 @@ _SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
     SEASONALITY_VARIANT,
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
 )
 _HMC_CONTINUOUS_VARIANTS: Final[tuple[str, ...]] = (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
 )
 
 
@@ -526,10 +533,14 @@ class ContinuousSideInfoVariantWindow:
             ("posterior_mean_W", mean_w),
             ("posterior_mean_b", mean_b),
         ):
-            if values.shape != (self.chosen_k, self.chosen_k):
+            expected_shape = (
+                (self.chosen_k, self.chosen_k, values.shape[2])
+                if attr_name == "posterior_mean_W" and values.ndim == 3
+                else (self.chosen_k, self.chosen_k)
+            )
+            if values.shape != expected_shape:
                 raise ValueError(
-                    f"{attr_name} must have shape ({self.chosen_k}, {self.chosen_k}), "
-                    f"got {values.shape}."
+                    f"{attr_name} must have shape {expected_shape}, " f"got {values.shape}."
                 )
             if not np.all(np.isfinite(values)):
                 raise ValueError(f"{attr_name} must contain only finite values.")
@@ -544,13 +555,14 @@ class ContinuousSideInfoVariantWindow:
         if missing:
             raise ValueError(f"posterior_samples is missing keys {sorted(missing)!r}.")
         frozen_samples: dict[str, np.ndarray] = {}
-        sample_shape: tuple[int, ...] | None = None
+        sample_prefix: tuple[int, int] | None = None
+        feature_dim: int | None = None
         for param_name in ("W", "b"):
             arr = np.asarray(self.posterior_samples[param_name], dtype=float).copy()
-            if arr.ndim != 4:
+            expected_ndim = 5 if param_name == "W" else 4
+            if arr.ndim != expected_ndim:
                 raise ValueError(
-                    f"posterior_samples[{param_name!r}] must be 4-D "
-                    "(chains, samples, K, K); "
+                    f"posterior_samples[{param_name!r}] must be {expected_ndim}-D; "
                     f"got shape {arr.shape}."
                 )
             if arr.shape[2] != self.chosen_k or arr.shape[3] != self.chosen_k:
@@ -558,17 +570,26 @@ class ContinuousSideInfoVariantWindow:
                     f"posterior_samples[{param_name!r}] trailing shape must be "
                     f"({self.chosen_k}, {self.chosen_k}); got {arr.shape}."
                 )
+            if param_name == "W":
+                feature_dim = int(arr.shape[4])
+                if feature_dim < 1:
+                    raise ValueError("posterior_samples['W'] must have at least one feature.")
             if not np.all(np.isfinite(arr)):
                 raise ValueError(f"posterior_samples[{param_name!r}] must be finite.")
-            if sample_shape is None:
-                sample_shape = arr.shape
-            elif arr.shape != sample_shape:
+            if sample_prefix is None:
+                sample_prefix = (arr.shape[0], arr.shape[1])
+            elif (arr.shape[0], arr.shape[1]) != sample_prefix:
                 raise ValueError(
-                    "posterior_samples['W'] and posterior_samples['b'] must have "
-                    f"the same shape; got {sample_shape} and {arr.shape}."
+                    "posterior_samples['W'] and posterior_samples['b'] must share "
+                    f"chain/sample dimensions; got {sample_prefix} and {arr.shape[:2]}."
                 )
             arr.setflags(write=False)
             frozen_samples[param_name] = arr
+        if mean_w.ndim != 3 or feature_dim is None or mean_w.shape[2] != feature_dim:
+            raise ValueError(
+                "posterior_mean_W feature dimension must match posterior_samples['W']; "
+                f"got {mean_w.shape} and {feature_dim}."
+            )
 
         if not isinstance(self.summary, pd.DataFrame):
             raise TypeError("summary must be a pd.DataFrame.")
@@ -661,7 +682,7 @@ def run_side_info_comparison(
     replaces an existing directory atomically (with rollback on failure).
 
     When ``checkpoint_dir`` is provided, each stage (baseline walk-forward plus
-    each of the six variants) is pickled to that directory on completion. On a
+    each variant) is pickled to that directory on completion. On a
     subsequent invocation with the same ``checkpoint_dir``, already-completed
     stages are loaded from disk instead of recomputed, so a crash mid-run only
     costs the in-progress variant. The directory is removed once the final
@@ -749,6 +770,17 @@ def run_side_info_comparison(
             baseline_windows=baseline_wf.windows,
         ),
     )
+    combined_hmc_variant = _checkpointed_stage(
+        VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_side_info_variant(
+            VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
+    )
     default_hmm_variant = _checkpointed_stage(
         DEFAULT_HMM_VARIANT,
         checkpoint_path,
@@ -769,6 +801,7 @@ def run_side_info_comparison(
             SEASONALITY_VARIANT: seasonality_variant,
             VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: vol_hmc_variant,
             SEASONALITY_HMC_CONTINUOUS_VARIANT: seasonality_hmc_variant,
+            VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT: combined_hmc_variant,
             DEFAULT_HMM_VARIANT: default_hmm_variant,
         },
     )
@@ -947,10 +980,15 @@ def _run_side_info_variant(
         decoded = wrapper.predict(train_slice)
 
         feature_full = _build_feature(variant, pd.concat([train_slice, effective_forecast]), config)
-        feature_train = feature_full.loc[train_slice.index]
-        feature_forecast = feature_full.loc[effective_forecast.index]
+        feature_train = feature_full.reindex(train_slice.index)
+        feature_forecast = feature_full.reindex(effective_forecast.index)
 
-        if feature_forecast.isna().any():
+        forecast_has_nan = (
+            bool(feature_forecast.isna().any().any())
+            if isinstance(feature_forecast, pd.DataFrame)
+            else bool(feature_forecast.isna().any())
+        )
+        if forecast_has_nan:
             raise ValueError(
                 f"forecast feature for variant {variant!r} contains NaN in window "
                 f"{baseline_window.index}; increase h_days so the rolling window is "
@@ -963,10 +1001,16 @@ def _run_side_info_variant(
                 f"variant {variant!r} window {baseline_window.index} has fewer than 2 "
                 "finite training feature observations after dropping the NaN prefix."
             )
-        nonnan_mask = feature_train.notna().to_numpy()
+        nonnan_mask = (
+            feature_train.notna().all(axis=1).to_numpy()
+            if isinstance(feature_train, pd.DataFrame)
+            else feature_train.notna().to_numpy()
+        )
         decoded_aligned = decoded[nonnan_mask]
         posterior_at_train_end = _terminal_training_posterior(train_slice, fitted)
-        x_train_end = float(feature_train_clean.iloc[-1])
+        x_train_end = np.asarray(feature_train_clean.iloc[-1], dtype=float)
+        if x_train_end.ndim == 0:
+            x_train_end = x_train_end.reshape(1)
 
         bucketed: BucketedTransitionResult | None = None
         continuous: ContinuousIOHMMResult | None = None
@@ -980,7 +1024,7 @@ def _run_side_info_variant(
             )
             train_end_transition = transition_probabilities_at(
                 result=continuous,
-                x_values=np.array([x_train_end], dtype=float),
+                x_values=x_train_end.reshape(1, -1),
             )[0]
             expected = _dynamic_forward_expected_returns_continuous(
                 forecast_returns=effective_forecast.to_numpy(),
@@ -1009,7 +1053,7 @@ def _run_side_info_variant(
                 bucket_boundaries=boundaries,
                 config=bucketed_config,
             )
-            train_end_transition = bucketed.transition_matrix_for(x_train_end)
+            train_end_transition = bucketed.transition_matrix_for(float(x_train_end[0]))
             expected = _dynamic_forward_expected_returns(
                 forecast_returns=effective_forecast.to_numpy(),
                 forecast_features=feature_forecast.to_numpy(),
@@ -1301,7 +1345,7 @@ def _build_feature(
     variant: str,
     series: pd.Series,
     config: SideInfoComparisonConfig,
-) -> pd.Series:
+) -> pd.Series | pd.DataFrame:
     if variant in (VOLATILITY_RATIO_VARIANT, VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT):
         return volatility_ratio(
             series,
@@ -1311,6 +1355,19 @@ def _build_feature(
         )
     if variant in (SEASONALITY_VARIANT, SEASONALITY_HMC_CONTINUOUS_VARIANT):
         return intraday_seasonality(series, config=config.seasonality)
+    if variant == VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT:
+        vol_ratio_feature = volatility_ratio(
+            series,
+            fast_window=config.vol_ratio.fast_window,
+            slow_window=config.vol_ratio.slow_window,
+            decay=config.vol_ratio.decay,
+        )
+        seasonality_feature = intraday_seasonality(series, config=config.seasonality)
+        return pd.concat(
+            [vol_ratio_feature, seasonality_feature],
+            axis=1,
+            keys=["vol_ratio", "seasonality"],
+        ).dropna()
     raise ValueError(f"unsupported variant {variant!r}.")
 
 
@@ -1663,9 +1720,10 @@ def _write_posterior_samples(run_dir: Path, variant: str, result: SideInfoVarian
 
     No-op for variants whose windows are not ``ContinuousSideInfoVariantWindow``
     (baseline, bucketed-grid, bucketed-quantile). Each window file contains
-    ``W`` and ``b`` arrays with shape ``(chains, samples, K, K)`` — the full
-    posterior, not just the mean — so credible intervals and posterior-
-    predictive checks are reproducible from the artifact alone.
+    ``W`` with shape ``(chains, samples, K, K, D)`` and ``b`` with shape
+    ``(chains, samples, K, K)`` — the full posterior, not just the mean — so
+    credible intervals and posterior-predictive checks are reproducible from
+    the artifact alone.
     """
     hmc_windows = [w for w in result.windows if isinstance(w, ContinuousSideInfoVariantWindow)]
     if not hmc_windows:

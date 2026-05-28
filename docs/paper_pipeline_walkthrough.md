@@ -66,10 +66,10 @@ in [`docs/results_vs_paper.md`](results_vs_paper.md).
   - ✅ IOHMM with seasonality (bucketed).
   - ✅ IOHMM with vol-ratio (HMC continuous-parametric, Gate K).
   - ✅ IOHMM with seasonality (HMC continuous-parametric, Gate K).
+  - ✅ Combined vol+seasonality IOHMM (HMC continuous-parametric, Gate Q) — natural extension of the Gate K continuous form to vector `x_t ∈ ℝ²`, with volatility-ratio and intraday-seasonality conditioning transitions jointly. NUTS still samples only `(W, b)` and emissions remain at the Baum-Welch fit.
   - ✅ Default HMM (`models/default_hmm.py`, Gate N) — PLR segment statistics seed the emission means/variances, `A` and `π` are held at `1/K`. Uses the shared forward filter and walk-forward rig with no parallel code path.
-  - ❌ **Combined vol+seasonality IOHMM not yet implemented**, scoped as Gate Q in `IMPLEMENTATION_PLAN.md`. Natural extension of the Gate K continuous form to vector `x_t ∈ ℝ²`; would change `EXPECTED_VARIANTS` and break existing comparison_id hashes (same cost paid by Gates K and N). Documented as the single most likely change to lift pre-cost Sharpe on this dataset.
 
-The two HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. The full 6-year ES walk-forward run completed (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for the headline numbers and the negative-result discussion.
+The single-predictor HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. Gate Q adds `configs/example_es_databento_side_info_comparison_combined.yaml` for the combined-predictor capability; the full headline Sharpe rerun is tracked separately from the capability PR. The full Gate K 6-year ES walk-forward run completed (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for the headline numbers and the negative-result discussion.
 
 ### 10. Asynchronous IOHMM
 - **Paper:** Sketches an asynchronous variant for mixed-frequency inputs (e.g., daily macro features mixed with minute returns).
@@ -727,4 +727,3 @@ Better to publish both sides transparently and let the reader decide.
    window so non-mixing chains are flagged rather than absorbed silently.
    Mitigation options if a window diverges: bump `num_warmup` or
    `target_accept_prob`, or tighten the spline prior on that data slice.
-
