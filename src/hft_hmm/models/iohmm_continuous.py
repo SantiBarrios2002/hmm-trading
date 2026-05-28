@@ -304,9 +304,14 @@ def transition_probabilities_at(
 ) -> np.ndarray:
     """Evaluate posterior-mean transition matrices at side-information values.
 
-    Returns an array with shape ``(len(x_values), K, K)``.  The training-window
+    Returns an array with shape ``(N, K, K)``.  The training-window
     standardization stored on ``result`` is reapplied before evaluating the
     softmax logits, and every transition row sums to one.
+
+    For a ``D``-feature fit, pass ``x_values`` with shape ``(N, D)``; a 1-D
+    array of length ``D`` is read as a single sample (``N = 1``), not as ``D``
+    separate scalar samples.  For ``D == 1`` a 1-D array is treated as ``N``
+    scalar samples.
 
     References: §4 IOHMM side-information transitions / Gate K/Q HMC
     """

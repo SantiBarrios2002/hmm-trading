@@ -17,7 +17,10 @@ data:
 frequency: 1min
 notes: Gate Q tiny smoke run on the checked-in ES CSV fixture. Exercises the
   combined volatility-ratio plus intraday-seasonality HMC continuous IOHMM
-  variant without running the full Databento benchmark.
+  variant without running the full Databento benchmark. Convergence gating is
+  deliberately loose for speed (3 warmup / 4 samples, rhat_threshold 10,
+  ess_bulk_threshold 1); diagnostics from this config are non-production and
+  only confirm the pipeline runs end-to-end. Outputs are not committed.
 seasonality:
   bucket_minutes: 1
   exchange_tz: America/Chicago
