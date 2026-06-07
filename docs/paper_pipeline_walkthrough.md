@@ -66,10 +66,10 @@ in [`docs/results_vs_paper.md`](results_vs_paper.md).
   - ✅ IOHMM with seasonality (bucketed).
   - ✅ IOHMM with vol-ratio (HMC continuous-parametric, Gate K).
   - ✅ IOHMM with seasonality (HMC continuous-parametric, Gate K).
+  - ✅ Combined vol+seasonality IOHMM (HMC continuous-parametric, Gate Q) — natural extension of the Gate K continuous form to vector `x_t ∈ ℝ²`, with volatility-ratio and intraday-seasonality conditioning transitions jointly. NUTS still samples only `(W, b)` and emissions remain at the Baum-Welch fit.
   - ✅ Default HMM (`models/default_hmm.py`, Gate N) — PLR segment statistics seed the emission means/variances, `A` and `π` are held at `1/K`. Uses the shared forward filter and walk-forward rig with no parallel code path.
-  - ❌ **Combined vol+seasonality IOHMM not yet implemented**, scoped as Gate Q in `IMPLEMENTATION_PLAN.md`. Natural extension of the Gate K continuous form to vector `x_t ∈ ℝ²`; would change `EXPECTED_VARIANTS` and break existing comparison_id hashes (same cost paid by Gates K and N). Documented as the single most likely change to lift pre-cost Sharpe on this dataset.
 
-The two HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. The full 6-year ES walk-forward run completed (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for the headline numbers and the negative-result discussion.
+The single-predictor HMC variants and their bucketed counterparts are run in one comparison (`configs/example_es_databento_side_info_comparison_hmc.yaml`) so the grid-vs-continuous ablation has a fair within-config baseline. Gate Q adds `configs/example_es_databento_side_info_comparison_combined.yaml` for the combined-predictor capability; its full 6-year headline rerun completed (artifacts at `runs/22bbd2c8d0a4`) and is a **negative result** — the combined variant (0.5453 pre-cost Sharpe) underperforms either single predictor alone. The Gate K 6-year ES walk-forward run completed earlier (artifacts at `runs/d8b6e7eef6c2`); see `results_vs_paper.md` for both sets of headline numbers and the negative-result discussions.
 
 ### 10. Asynchronous IOHMM
 - **Paper:** Sketches an asynchronous variant for mixed-frequency inputs (e.g., daily macro features mixed with minute returns).
@@ -109,20 +109,20 @@ The two HMC variants and their bucketed counterparts are run in one comparison (
 Status as of now:
 
 - ✅ **HMC continuous-parametric IOHMM (Gate K) is shipped** — closes the §8 approximation gap *and* delivers the Tema 2 MCMC contribution in one PR (merged in #48). Full 6-year ES benchmark complete (run `d8b6e7eef6c2`); methodology delivered but **the outcome is a negative result on Sharpe** — bucketed beats HMC on vol-ratio (0.76 vs 0.65), tied within noise on seasonality. See `results_vs_paper.md` for the table and the three plausible explanations.
+- ✅ **Combined vol+seasonality IOHMM (Gate Q) is shipped** — closes the §4 combined-predictor coverage gap (PR #53, run `22bbd2c8d0a4`). Also a **negative result on Sharpe**: joint conditioning on `x_t ∈ ℝ²` scored 0.5453, below either single predictor; the predicted lift did not materialize. The best configuration found remains vol-ratio bucketed (0.7583).
 - 🟡 Gate L (DMM benchmark) is the planned next contribution (modern alternative on the state-space ladder, see scope justification §6).
 
 Remaining gap-closing extras the doc still tracks, ranked by paper-fidelity vs cost:
 
 | Extra | Closes which §2.5 / paper gap? | Implementation cost | Probable Sharpe impact |
 |---|---|---|---|
-| **Combined vol+seasonality IOHMM** | §4 combined predictor variant; scoped as Gate Q in `IMPLEMENTATION_PLAN.md` | ~1 week | Moderate-to-high lift expected — highest documented Sharpe-flip candidate |
 | **CV-based K selection** | §4 model-selection trio (we have 1/3) | ~1 week | Likely picks K=2 even with longer h, would invalidate the BIC=4 overfit |
 | **PLR seeding of HMM init** | §3.1 init scheme (we have PLR but don't wire it in) | ~2 days | Small, but full §3.1 fidelity |
 | **Quantile-boundary rerun of the Gate K comparison** | Issue 42 *capability* shipped via PR #46 (`boundary_mode: "quantile"`); the Gate K run `d8b6e7eef6c2` still used `boundary_mode: grid`. A rerun with quantile mode would clean up the grid-vs-continuous attribution and isolate "is the bucketed advantage real, or grid-placement luck?" | ~half a day (rerun only) | Small on its own, but cleans up the negative-result story |
 | **MCMC bridge sampling for K only** | §2.5 exclusion (now partially neutralized — Gate K already delivers MCMC credibility) | 2–3 weeks | Probably picks K=2, like CV would; redundant given Gate K is in |
 | **Full MCMC on Θ** | §2.5 exclusion (the "I implemented MCMC on Θ" credential) | 3+ weeks | Negligible — Θ converges to BW result on this data |
 
-If the goal is **better Sharpe**: combined IOHMM.
+The Gate Q result removed combined-IOHMM from this list as the "better Sharpe" lever — it was tested and didn't help.
 If the goal is **defensible "we addressed the paper's selection trio" narrative**: CV K selection.
 The Tema 2 / MCMC ask is **already satisfied by Gate K** — bridge sampling for K is no longer the headline MCMC story.
 
@@ -727,4 +727,3 @@ Better to publish both sides transparently and let the reader decide.
    window so non-mixing chains are flagged rather than absorbed silently.
    Mitigation options if a window diverges: bump `num_warmup` or
    `target_accept_prob`, or tighten the spline prior on that data slice.
-

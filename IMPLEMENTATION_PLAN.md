@@ -466,19 +466,25 @@ from the same chains; this gate completes the §4 K-selection trio
 
 ---
 
-## Gate Q — Combined volatility-ratio + seasonality IOHMM (faithful replication)
-**Covers:** §4 combined predictor variant. Issue and branch to be opened when work starts (suggested: `feat/NN-combined-iohmm`).
+## Gate Q — Combined volatility-ratio + seasonality IOHMM (faithful replication) ✅ SHIPPED — negative result
+**Covers:** §4 combined predictor variant. Landed via PR #53 (branch `feat/52-combined-iohmm`), headline rerun `runs/22bbd2c8d0a4` (2026-06-02).
 
 Paper §4 evaluates IOHMM-Predictor-I (vol-ratio), IOHMM-Predictor-II
 (seasonality), **and a combined IOHMM** that conditions transitions on
-both predictors jointly. The repo currently has both single-predictor
-variants in bucketed and HMC-continuous form, but the combined variant is
-deferred — and explicitly flagged in both
-[`docs/paper_pipeline_walkthrough.md`](docs/paper_pipeline_walkthrough.md)
-and [`docs/results_vs_paper.md`](docs/results_vs_paper.md) as the single
-most likely change to lift pre-cost Sharpe on this dataset. This gate
-adds it as a natural extension of the Gate K continuous-parametric form
-to vector-valued side information.
+both predictors jointly. The repo had both single-predictor variants in
+bucketed and HMC-continuous form; this gate added the combined variant as a
+natural extension of the Gate K continuous-parametric form to vector-valued
+side information (`x_t ∈ ℝ²`).
+
+**Outcome — negative result.** The combined variant scored **0.5453** pre-cost
+Sharpe on the 6-year Databento ES rerun — *below* both single predictors
+(vol-ratio HMC 0.6515, seasonality HMC 0.6281) and barely above baseline
+(0.5298); the best configuration found remains vol-ratio **bucketed** (0.7583).
+Joint conditioning diluted the vol-ratio edge rather than stacking the signals;
+all 92 windows converged cleanly (rhat ≈ 1.00–1.003), so it is a real finding,
+not a sampler artifact. This **falsifies** the prior "single most likely Sharpe
+lift" prediction and makes Gate Q the project's third consistent negative
+result. See [`docs/results_vs_paper.md`](docs/results_vs_paper.md).
 
 ### Must pass
 - A new variant `vol_ratio_seasonality_hmc_continuous` is registered in `EXPECTED_VARIANTS`, fit via NumPyro NUTS with `A_ij(x_t) = softmax_j(W_i · x_t + b_i)` where `x_t ∈ ℝ²` carries vol-ratio and seasonality jointly.
@@ -493,13 +499,13 @@ to vector-valued side information.
 - Per-window convergence summary (R-hat, ESS) for the combined variant, matching the Gate K reporting convention
 - A reproducibility check via `scripts/repro.py`
 
-### Why this gate is high-leverage
-- **Paper-faithful coverage:** paper §4 has the combined variant; the repo doesn't. Closes a real coverage gap, not a refinement.
-- **Most likely Sharpe lift on this data:** vol-ratio and seasonality are individually useful (0.76 and 0.63 pre-cost Sharpe vs 0.53 baseline). The conviction-weighted, K-sweep, and h=60 ablations all failed; none of them tested joint conditioning. Cross-effects (e.g., "high vol-ratio behaves differently at the open than at midday") are the unexplored axis.
+### Why this gate was high-leverage (and how it resolved)
+- **Paper-faithful coverage (achieved):** paper §4 has the combined variant; the repo now matches it. Closed a real coverage gap, not a refinement.
+- **Hypothesized Sharpe lift (falsified):** vol-ratio and seasonality are individually useful (0.76 and 0.63 pre-cost Sharpe vs 0.53 baseline), and the conviction-weighted, K-sweep, and h=60 ablations had all failed without testing joint conditioning — so cross-effects ("high vol-ratio behaves differently at the open than at midday") were the unexplored axis. The rerun tested it: joint conditioning **did not** capture additive or cross-predictor structure; it diluted the vol-ratio edge (0.5453, below either predictor alone). The coverage value held; the Sharpe hypothesis did not.
 - **Methodologically distinct from Gate K:** new transition structure, not a new inference method. Preserves the §2.5 exclusion (NUTS still samples only `(W, b)`).
 
-### Cost
-~1 week of implementation + tests + docs, plus one ~10-20h headline rerun for the combined-IOHMM artifact.
+### Cost (actual)
+Implementation + tests + docs, plus one headline rerun (`runs/22bbd2c8d0a4`, ~30h elapsed on local CPU including HMC across all variants).
 
 ---
 
@@ -524,7 +530,7 @@ In addition to the minimum above:
 
 - **Trading-model table reaches 6/6 paper variants:** Default HMM (Gate N) and MCMC HMM (Gate O) are landed alongside the existing four.
 - **K-selection trio reaches 3/3 paper routes:** cross-validation (Gate M) and bridge sampling (Gate P) are landed alongside AIC/BIC.
-- **Combined IOHMM (Gate Q) lands** so the §4 trading-variant inventory matches the paper's combined-predictor experiment in addition to the single-predictor ones.
+- **Combined IOHMM (Gate Q) ✅ landed** (PR #53) so the §4 trading-variant inventory matches the paper's combined-predictor experiment in addition to the single-predictor ones — headline outcome is a negative result on Sharpe.
 - **Extensions land in order:** Gate K (HMC IOHMM, ✅ shipped), Gate L (DMM benchmark).
 
 A strong project at this level passes every gate listed in §3 (A–Q).
@@ -567,7 +573,7 @@ constraint: Gates M and P should both be exercised on `h_days=23` *and*
 sampling head-to-head on the same windows.
 
 12. **Gate N — Default HMM variant** (~0.5–1 day, no dependencies). Closes the trading-table gap; smallest piece of work in path B.
-13. **Gate Q — Combined vol-ratio + seasonality IOHMM** (~1 week, depends on Gate K for the continuous-IOHMM module). Highest documented Sharpe-lift candidate on this data; closes the §4 combined-predictor coverage gap.
+13. **Gate Q — Combined vol-ratio + seasonality IOHMM** ✅ shipped (PR #53, run `22bbd2c8d0a4`). Closed the §4 combined-predictor coverage gap; the hypothesized Sharpe lift was **falsified** (0.5453, below either single predictor).
 14. **Gate M — Cross-validation for K selection** (~1 week, no dependencies). Resolves the BIC overfit empirically; standalone, no MCMC machinery needed.
 15. **Gate O — MCMC on Θ** (~1–2 weeks, no hard dependencies but reuses NumPyro infra from Gate K). Replicates the paper's "MCMC HMM underperforms BW" finding (or refutes it on the local sample).
 16. **Gate P — Bridge sampling for K** (~0.5 week, **depends on Gate O** for posterior samples). Completes the §4 K-selection trio.

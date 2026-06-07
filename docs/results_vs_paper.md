@@ -29,6 +29,21 @@ Five reproducible runs back this document:
   below. Also a negative result for the continuous form on this data;
   see below.
 
+- `runs/22bbd2c8d0a4` — Gate Q combined-predictor comparison. Same
+  walk-forward settings (`h_days=23`, `t_days=20`, `retrain_every_days=20`,
+  `K=2`) and config family as the Gate K run, but adds the combined
+  volatility-ratio + seasonality HMC continuous-parametric variant
+  (`x_t ∈ ℝ²`) alongside the baseline, both bucketed, both single-predictor
+  HMC, and the default-HMM floor. Source of the combined-variant row and the
+  Gate Q negative result below. The single-predictor variants reproduce the
+  Gate K run within numerical noise (e.g. vol-ratio bucketed 0.7583 vs
+  0.7577, vol-ratio HMC 0.6515 vs 0.6513).
+
+Gate Q lands the combined volatility-ratio plus seasonality HMC
+continuous-parametric IOHMM capability and its full 6-year headline Sharpe
+rerun (`runs/22bbd2c8d0a4`). The combined variant is a **negative result**:
+joint conditioning underperforms either predictor alone (see below).
+
 The first two runs share the Databento ES 1-minute parquet, walk-forward
 schedule (`h_days=23`, `t_days=20`, `retrain_every_days=20`, `K=2`), and
 `cost_bps_per_turnover=1.0`. Configs:
@@ -81,6 +96,22 @@ within-config baseline.
 | Volatility-ratio IOHMM (HMC continuous) | sign | 0.6513 | 0.4079 | 1.3025 | `d8b6e7eef6c2` |
 | Seasonality IOHMM (bucketed)            | sign | 0.6285 | 0.4080 | 1.2191 | `d8b6e7eef6c2` |
 | Seasonality IOHMM (HMC continuous)      | sign | 0.6279 | 0.4079 | 1.2057 | `d8b6e7eef6c2` |
+| Combined vol-ratio + seasonality IOHMM (HMC continuous) | sign | 0.5453 | 0.4079 | 1.0083 | `22bbd2c8d0a4` |
+
+The combined HMC variant lands with `W ∈ ℝ^{K×K×2}` and leakage-free per-feature
+standardization, fit with NumPyro NUTS per window. **It is a negative result**:
+at 0.5453 pre-cost Sharpe it underperforms *both* single-predictor variants
+(vol-ratio 0.6515, seasonality 0.6281 in the same run) and sits barely above the
+plain baseline (0.5298) — far below the best configuration found, vol-ratio
+bucketed at 0.7583. Joint conditioning on `x_t ∈ ℝ²` did not capture additive or
+cross-predictor structure; it diluted the volatility-ratio edge rather than
+stacking the two signals.
+
+**Convergence.** All 92 windows of the combined variant converged cleanly
+(`rhat_max ≤ 1.05`, `ess_bulk_min ≥ 200` per the config thresholds; observed
+rhat ≈ 1.00–1.003), so the negative result is not an artifact of sampler
+non-convergence — the doubled input dimension fits fine, it just does not help
+the trading signal.
 
 **Negative result for the continuous-parametric form on this data.** On
 seasonality the two formulations are within numerical noise of each other
@@ -272,11 +303,13 @@ defaults survive ablation rather than reflecting an arbitrary choice.
 If a future PR wants to push pre-cost Sharpe further on this dataset, the
 levers most likely to help — based on what *didn't* work above — are:
 
-- **Combined vol-ratio + seasonality IOHMM** (scoped as Gate Q in
-  `IMPLEMENTATION_PLAN.md`). The two predictors are individually useful;
-  joint conditioning of the transition softmax on `x_t ∈ ℝ²` may capture
-  cross-effects that the independent variants miss. Documented here as
-  the single most likely change to lift pre-cost Sharpe on this dataset.
+- ~~**Combined vol-ratio + seasonality IOHMM** — predicted here as the single
+  most likely Sharpe lift.~~ **Tested (Gate Q, run `22bbd2c8d0a4`) and it is a
+  negative result:** joint conditioning on `x_t ∈ ℝ²` scored 0.5453 pre-cost
+  Sharpe — *below* both single predictors and barely above baseline. The
+  expected cross-effect lift did not materialize; combining the predictors
+  diluted the vol-ratio edge. See the combined-variant rows in the Gate K /
+  Gate Q comparison table above.
 - **Cross-validation `K` selection instead of BIC.** The §4 paper compares
   CV, AIC/BIC, and MCMC bridge sampling; we only implement BIC. CV would
   pick `K` by held-out predictive performance, which is the metric we
@@ -299,13 +332,13 @@ None of these are scope-clean one-liners; they are issue-sized follow-ups.
   spline knots, and vol-ratio EWMA parameters are kept at the headline values
   so the Sharpe lift is attributable to the signal/selection changes rather
   than to a feature-engineering sweep.
-- **A combined vol-ratio + seasonality IOHMM variant is scoped as Gate Q**
-  in `IMPLEMENTATION_PLAN.md` but not implemented this round. Each
-  `EXPECTED_VARIANTS` change invalidates existing comparison_id hashes and
-  forces a headline rerun; Gates K and N have already paid this cost twice,
-  and Gate Q will be the third (and likely final) such change. Tracked
-  separately so the Sharpe-improvement experiments in this section stay
-  attributable to signal/selection choices, not to a new model variant.
+- **The combined vol-ratio + seasonality IOHMM variant is landed as a Gate Q
+  capability and its headline rerun is complete (`22bbd2c8d0a4`).** The
+  `EXPECTED_VARIANTS` change invalidated existing comparison_id hashes and
+  forced the rerun; the combined variant's pre-cost Sharpe (0.5453) is reported
+  in the Gate K / Gate Q table above and is a negative result. It is kept out
+  of the signal/selection Sharpe-improvement tables so those stay attributable
+  to policy/selection choices rather than to the new model variant.
 
 ## Post-Cost Diagnostic
 

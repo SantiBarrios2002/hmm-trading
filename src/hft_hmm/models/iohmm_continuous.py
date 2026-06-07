@@ -1,10 +1,10 @@
 """Continuous-parametric IOHMM transition conditioning fit with NumPyro NUTS.
 
-This module implements the Gate K transition-function upgrade:
+This module implements the Gate K/Gate Q transition-function upgrade:
 
 ``A_ij(x_t) = softmax_j(W_i· x_t + b_i)``
 
-for scalar side information ``x_t``.  It is a paper-faithful transition
+for vector side information ``x_t``.  It is a paper-faithful transition
 parameterization, with the repo's deliberately scoped inference simplification:
 emission parameters stay fixed at the per-window Baum-Welch fit and the decoded
 training state path is used as the supervisory signal.  NUTS samples only the
@@ -25,7 +25,7 @@ logits per row directly (e.g. fix the last column to zero) and drop the
 post-hoc centering; the math is equivalent and the posterior space is
 smaller.
 
-References: §4 IOHMM side-information transitions / Gate K HMC extension
+References: §4 IOHMM side-information transitions / Gate K/Q HMC extension
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from hft_hmm.core import ENGINEERING_APPROXIMATION, PaperReference, reference
 
 __category__: Final[str] = ENGINEERING_APPROXIMATION
 CONTINUOUS_IOHMM_REFERENCE: Final[PaperReference] = reference(
-    "§4", "continuous-parametric IOHMM transitions / Gate K HMC"
+    "§4", "continuous-parametric IOHMM transitions / Gate K/Q HMC"
 )
 
 _PARAMETER_NAMES: Final[tuple[str, str]] = ("W", "b")
@@ -55,14 +55,14 @@ _MIN_STD: Final[float] = 1e-12
 
 @dataclass(frozen=True)
 class ContinuousIOHMMConfig:
-    """NumPyro NUTS settings and convergence thresholds for the Gate K IOHMM.
+    """NumPyro NUTS settings and convergence thresholds for the continuous IOHMM.
 
     ``num_chains``, ``num_warmup``, ``num_samples``, and
     ``target_accept_prob`` are passed directly to NumPyro's NUTS/MCMC runner.
     ``seed`` controls JAX's PRNG key. ``rhat_threshold`` and
     ``ess_bulk_threshold`` define the artifact-level ``converged`` flag.
 
-    References: §4 IOHMM side-information transitions / Gate K HMC
+    References: §4 IOHMM side-information transitions / Gate K/Q HMC
     """
 
     num_chains: int = 2
@@ -109,13 +109,14 @@ class ContinuousIOHMMConfig:
 class ContinuousIOHMMResult:
     """Posterior and diagnostics for one continuous-parametric IOHMM fit.
 
-    ``posterior_samples`` contains row-centered samples for keys ``"W"`` and
-    ``"b"`` with shape ``(chains, samples, K, K)``. ``posterior_mean_W`` and
+    ``posterior_samples`` contains row-centered samples for ``"W"`` with shape
+    ``(chains, samples, K, K, D)`` and ``"b"`` with shape
+    ``(chains, samples, K, K)``. ``posterior_mean_W`` and
     ``posterior_mean_b`` are coefficient means under the same row-centered
-    convention. ``standardization`` stores the training-slice ``(mean, std)``
-    used to transform side information before evaluating ``A(x_t)``.
+    convention. ``standardization`` stores the training-slice
+    ``(mean, std)`` arrays with one entry per side-information feature.
 
-    References: §4 IOHMM side-information transitions / Gate K HMC
+    References: §4 IOHMM side-information transitions / Gate K/Q HMC
     """
 
     config: ContinuousIOHMMConfig
@@ -126,7 +127,7 @@ class ContinuousIOHMMResult:
     converged: bool
     posterior_mean_W: np.ndarray
     posterior_mean_b: np.ndarray
-    standardization: tuple[float, float]
+    standardization: tuple[np.ndarray, np.ndarray]
 
     def __post_init__(self) -> None:
         if not isinstance(self.config, ContinuousIOHMMConfig):
@@ -134,74 +135,70 @@ class ContinuousIOHMMResult:
                 "config must be a ContinuousIOHMMConfig, " f"got {type(self.config).__name__}."
             )
 
-        samples = _freeze_parameter_dict(
-            self.posterior_samples,
-            name="posterior_samples",
-            ndim=4,
-            allow_negative=True,
-        )
-        sample_shape = samples["W"].shape
-        if samples["b"].shape != sample_shape:
+        samples = _freeze_parameter_samples(self.posterior_samples, name="posterior_samples")
+        w_shape = samples["W"].shape
+        b_shape = samples["b"].shape
+        if w_shape[:4] != b_shape or w_shape[4] < 1:
             raise ValueError(
-                "posterior_samples['W'] and posterior_samples['b'] must have the same "
-                f"shape; got {sample_shape} and {samples['b'].shape}."
+                "posterior_samples['W'] must have shape "
+                "(chains, samples, K, K, D) and posterior_samples['b'] must have "
+                f"shape (chains, samples, K, K); got {w_shape} and {b_shape}."
             )
-        if sample_shape[0] != self.config.num_chains or sample_shape[1] != self.config.num_samples:
+        if w_shape[0] != self.config.num_chains or w_shape[1] != self.config.num_samples:
             raise ValueError(
                 "posterior sample leading dimensions must match the config "
                 f"({self.config.num_chains}, {self.config.num_samples}); "
-                f"got {sample_shape[:2]}."
+                f"got {w_shape[:2]}."
             )
-        if sample_shape[2] != sample_shape[3] or sample_shape[2] < 2:
-            raise ValueError(f"posterior samples must end with shape (K, K), got {sample_shape}.")
-        k = sample_shape[2]
+        if w_shape[2] != w_shape[3] or w_shape[2] < 2:
+            raise ValueError(f"posterior samples must contain K x K rows, got {w_shape}.")
+        k = w_shape[2]
+        d = w_shape[4]
 
-        rhat = _freeze_parameter_dict(self.rhat, name="rhat", ndim=2, allow_negative=False)
-        ess_bulk = _freeze_parameter_dict(
-            self.ess_bulk,
-            name="ess_bulk",
-            ndim=2,
-            allow_negative=False,
-        )
-        ess_tail = _freeze_parameter_dict(
-            self.ess_tail,
-            name="ess_tail",
-            ndim=2,
-            allow_negative=False,
-        )
+        rhat = _freeze_parameter_metrics(self.rhat, name="rhat")
+        ess_bulk = _freeze_parameter_metrics(self.ess_bulk, name="ess_bulk")
+        ess_tail = _freeze_parameter_metrics(self.ess_tail, name="ess_tail")
         for metric_name, metric in (
             ("rhat", rhat),
             ("ess_bulk", ess_bulk),
             ("ess_tail", ess_tail),
         ):
             for param_name, values in metric.items():
-                if values.shape != (k, k):
+                expected_shape = (k, k, d) if param_name == "W" else (k, k)
+                if values.shape != expected_shape:
                     raise ValueError(
-                        f"{metric_name}[{param_name!r}] must have shape ({k}, {k}), "
+                        f"{metric_name}[{param_name!r}] must have shape {expected_shape}, "
                         f"got {values.shape}."
                     )
 
         mean_w = np.asarray(self.posterior_mean_W, dtype=float).copy()
         mean_b = np.asarray(self.posterior_mean_b, dtype=float).copy()
-        for attr_name, values in (
-            ("posterior_mean_W", mean_w),
-            ("posterior_mean_b", mean_b),
-        ):
-            if values.shape != (k, k):
-                raise ValueError(f"{attr_name} must have shape ({k}, {k}), got {values.shape}.")
+        if mean_w.shape != (k, k, d):
+            raise ValueError(
+                f"posterior_mean_W must have shape ({k}, {k}, {d}), got {mean_w.shape}."
+            )
+        if mean_b.shape != (k, k):
+            raise ValueError(f"posterior_mean_b must have shape ({k}, {k}), got {mean_b.shape}.")
+        for attr_name, values in (("posterior_mean_W", mean_w), ("posterior_mean_b", mean_b)):
             if not np.all(np.isfinite(values)):
                 raise ValueError(f"{attr_name} must contain only finite values.")
             values.setflags(write=False)
 
         mean, std = self.standardization
-        mean = float(mean)
-        std = float(std)
-        if not np.isfinite(mean):
-            raise ValueError(f"standardization mean must be finite, got {mean!r}.")
-        if not np.isfinite(std) or std <= 0.0:
+        mean_arr = np.asarray(mean, dtype=float).copy()
+        std_arr = np.asarray(std, dtype=float).copy()
+        if mean_arr.shape != (d,):
+            raise ValueError(f"standardization mean must have shape ({d},), got {mean_arr.shape}.")
+        if std_arr.shape != (d,):
+            raise ValueError(f"standardization std must have shape ({d},), got {std_arr.shape}.")
+        if not np.all(np.isfinite(mean_arr)):
+            raise ValueError("standardization mean must contain only finite values.")
+        if not np.all(np.isfinite(std_arr)) or np.any(std_arr <= 0.0):
             raise ValueError(
-                f"standardization std must be finite and strictly positive, got {std!r}."
+                "standardization std must contain only finite, strictly positive values."
             )
+        mean_arr.setflags(write=False)
+        std_arr.setflags(write=False)
 
         object.__setattr__(self, "posterior_samples", samples)
         object.__setattr__(self, "rhat", rhat)
@@ -210,7 +207,7 @@ class ContinuousIOHMMResult:
         object.__setattr__(self, "converged", bool(self.converged))
         object.__setattr__(self, "posterior_mean_W", mean_w)
         object.__setattr__(self, "posterior_mean_b", mean_b)
-        object.__setattr__(self, "standardization", (mean, std))
+        object.__setattr__(self, "standardization", (mean_arr, std_arr))
 
 
 def fit_continuous_iohmm(
@@ -228,7 +225,7 @@ def fit_continuous_iohmm(
     training slice and the same transformation is stored for forecast-time
     transition evaluation.
 
-    References: §4 IOHMM side-information transitions / Gate K HMC
+    References: §4 IOHMM side-information transitions / Gate K/Q HMC
     """
     if config is None:
         config = ContinuousIOHMMConfig()
@@ -238,11 +235,11 @@ def fit_continuous_iohmm(
     K = _validate_n_states(n_states)
     states = _coerce_state_sequence(state_sequence, n_states=K)
     side_info = _coerce_side_information(side_information, expected_len=len(states))
-    mean = float(side_info.mean())
-    std = float(side_info.std())
-    if std <= _MIN_STD:
-        std = 1.0
+    mean = side_info.mean(axis=0)
+    std = side_info.std(axis=0)
+    std = np.where(std <= _MIN_STD, 1.0, std)
     side_info_std = (side_info - mean) / std
+    D = int(side_info.shape[1])
 
     kernel = NUTS(_numpyro_model, target_accept_prob=config.target_accept_prob)
     mcmc = MCMC(
@@ -255,9 +252,10 @@ def fit_continuous_iohmm(
     )
     mcmc.run(
         jax.random.PRNGKey(config.seed),
-        jnp.asarray(side_info_std, dtype=jnp.float32),
+        jnp.asarray(side_info_std[:, 0] if D == 1 else side_info_std, dtype=jnp.float32),
         jnp.asarray(states, dtype=jnp.int32),
         K,
+        D,
     )
 
     raw_samples = {
@@ -265,7 +263,12 @@ def fit_continuous_iohmm(
         for name, value in mcmc.get_samples(group_by_chain=True).items()
         if name in _PARAMETER_NAMES
     }
-    samples = {name: _center_rows(value) for name, value in raw_samples.items()}
+    samples = {}
+    for name, value in raw_samples.items():
+        centered = _center_rows(name, value)
+        if name == "W" and centered.ndim == 4:
+            centered = centered[..., None]
+        samples[name] = centered
     diagnostics = _diagnostics(samples)
     diagnostics = _mark_unidentified_rows(
         diagnostics,
@@ -288,7 +291,7 @@ def fit_continuous_iohmm(
         ess_bulk=diagnostics["ess_bulk"],
         ess_tail=diagnostics["ess_tail"],
         converged=converged,
-        posterior_mean_W=samples["W"].reshape(-1, K, K).mean(axis=0),
+        posterior_mean_W=samples["W"].reshape(-1, K, K, D).mean(axis=0),
         posterior_mean_b=samples["b"].reshape(-1, K, K).mean(axis=0),
         standardization=(mean, std),
     )
@@ -301,32 +304,47 @@ def transition_probabilities_at(
 ) -> np.ndarray:
     """Evaluate posterior-mean transition matrices at side-information values.
 
-    Returns an array with shape ``(len(x_values), K, K)``.  The training-window
+    Returns an array with shape ``(N, K, K)``.  The training-window
     standardization stored on ``result`` is reapplied before evaluating the
     softmax logits, and every transition row sums to one.
 
-    References: §4 IOHMM side-information transitions / Gate K HMC
+    For a ``D``-feature fit, pass ``x_values`` with shape ``(N, D)``; a 1-D
+    array of length ``D`` is read as a single sample (``N = 1``), not as ``D``
+    separate scalar samples.  For ``D == 1`` a 1-D array is treated as ``N``
+    scalar samples.
+
+    References: §4 IOHMM side-information transitions / Gate K/Q HMC
     """
     if not isinstance(result, ContinuousIOHMMResult):
         raise TypeError("result must be a ContinuousIOHMMResult, " f"got {type(result).__name__}.")
-    x = np.asarray(x_values, dtype=float)
-    if x.ndim == 0:
-        x = x.reshape(1)
-    if x.ndim != 1:
-        raise ValueError(f"x_values must be one-dimensional, got shape {x.shape}.")
+    mean, std = result.standardization
+    x = _coerce_x_values(x_values, feature_dim=mean.shape[0])
     if not np.all(np.isfinite(x)):
         raise ValueError("x_values must contain only finite values.")
 
-    mean, std = result.standardization
     standardized = (x - mean) / std
-    logits = result.posterior_mean_W[None, :, :] * standardized[:, None, None]
+    logits = np.einsum("ijd,nd->nij", result.posterior_mean_W, standardized)
     logits = logits + result.posterior_mean_b[None, :, :]
     return _softmax(logits, axis=2)
 
 
-def _numpyro_model(side_info_std: jnp.ndarray, states: jnp.ndarray, n_states: int) -> None:
+def _numpyro_model(
+    side_info_std: jnp.ndarray,
+    states: jnp.ndarray,
+    n_states: int,
+    n_features: int,
+) -> None:
     """NumPyro transition-logit model with a scanned categorical likelihood."""
-    W_raw = numpyro.sample("W", dist.Normal(0.0, 1.0).expand([n_states, n_states]).to_event(2))
+    if n_features == 1:
+        W_raw = numpyro.sample(
+            "W",
+            dist.Normal(0.0, 1.0).expand([n_states, n_states]).to_event(2),
+        )
+    else:
+        W_raw = numpyro.sample(
+            "W",
+            dist.Normal(0.0, 1.0).expand([n_states, n_states, n_features]).to_event(3),
+        )
     b_raw = numpyro.sample("b", dist.Normal(0.0, 1.0).expand([n_states, n_states]).to_event(2))
     W = W_raw - jnp.mean(W_raw, axis=1, keepdims=True)
     b = b_raw - jnp.mean(b_raw, axis=1, keepdims=True)
@@ -337,7 +355,10 @@ def _numpyro_model(side_info_std: jnp.ndarray, states: jnp.ndarray, n_states: in
 
     def scan_step(total_log_lik: jnp.ndarray, inputs: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]):
         x_t, from_state, to_state = inputs
-        logits = W * x_t + b
+        if n_features == 1:
+            logits = W * x_t + b
+        else:
+            logits = jnp.sum(W * x_t[None, None, :], axis=2) + b
         log_probs = jax.nn.log_softmax(logits, axis=1)
         total_log_lik = total_log_lik + log_probs[from_state, to_state]
         return total_log_lik, None
@@ -365,8 +386,9 @@ def _tail_ess(values: np.ndarray) -> np.ndarray:
     flat = values.reshape((-1,) + values.shape[2:])
     lower = np.quantile(flat, 0.05, axis=0)
     upper = np.quantile(flat, 0.95, axis=0)
-    lower_indicator = (values <= lower[None, None, :, :]).astype(float)
-    upper_indicator = (values >= upper[None, None, :, :]).astype(float)
+    broadcast_shape = (1, 1) + lower.shape
+    lower_indicator = (values <= lower.reshape(broadcast_shape)).astype(float)
+    upper_indicator = (values >= upper.reshape(broadcast_shape)).astype(float)
     return cast(
         np.ndarray,
         np.minimum(
@@ -394,9 +416,9 @@ def _mark_unidentified_rows(
     }
     high_rhat = max(config.rhat_threshold * 2.0, config.rhat_threshold + 1.0)
     for name in _PARAMETER_NAMES:
-        marked["rhat"][name][unidentified, :] = high_rhat
-        marked["ess_bulk"][name][unidentified, :] = 0.0
-        marked["ess_tail"][name][unidentified, :] = 0.0
+        marked["rhat"][name][unidentified, ...] = high_rhat
+        marked["ess_bulk"][name][unidentified, ...] = 0.0
+        marked["ess_tail"][name][unidentified, ...] = 0.0
     return marked
 
 
@@ -435,13 +457,20 @@ def _coerce_state_sequence(state_sequence: np.ndarray, *, n_states: int) -> np.n
 
 def _coerce_side_information(side_information: np.ndarray, *, expected_len: int) -> np.ndarray:
     side_info = np.asarray(side_information, dtype=float)
-    if side_info.ndim != 1:
-        raise ValueError(f"side_information must be one-dimensional, got shape {side_info.shape}.")
+    if side_info.ndim == 1:
+        side_info = side_info.reshape(-1, 1)
+    elif side_info.ndim != 2:
+        raise ValueError(
+            "side_information must be one-dimensional or two-dimensional, "
+            f"got shape {side_info.shape}."
+        )
     if side_info.shape[0] != expected_len:
         raise ValueError(
             "side_information must have the same length as state_sequence; "
             f"got {side_info.shape[0]} vs {expected_len}."
         )
+    if side_info.shape[1] < 1:
+        raise ValueError("side_information must contain at least one feature column.")
     if not np.all(np.isfinite(side_info)):
         raise ValueError("side_information must contain only finite values.")
     return side_info
@@ -459,8 +488,37 @@ def _validate_int(value: int, name: str) -> None:
         raise TypeError(f"{name} must be an integer, got {type(value).__name__}.")
 
 
-def _center_rows(values: np.ndarray) -> np.ndarray:
-    centered = np.asarray(values, dtype=float) - np.mean(values, axis=-1, keepdims=True)
+def _coerce_x_values(x_values: np.ndarray, *, feature_dim: int) -> np.ndarray:
+    x = np.asarray(x_values, dtype=float)
+    if x.ndim == 0:
+        if feature_dim != 1:
+            raise ValueError(
+                f"x_values must have shape (N, {feature_dim}) for this result; got scalar."
+            )
+        x = x.reshape(1, 1)
+    elif x.ndim == 1:
+        if feature_dim == 1:
+            x = x.reshape(-1, 1)
+        elif x.shape[0] == feature_dim:
+            x = x.reshape(1, feature_dim)
+        else:
+            raise ValueError(
+                f"x_values must have shape (N, {feature_dim}); got one-dimensional "
+                f"shape {x.shape}."
+            )
+    elif x.ndim == 2:
+        if x.shape[1] != feature_dim:
+            raise ValueError(
+                f"x_values must have {feature_dim} feature columns, got shape {x.shape}."
+            )
+    else:
+        raise ValueError(f"x_values must be one- or two-dimensional, got shape {x.shape}.")
+    return x
+
+
+def _center_rows(name: str, values: np.ndarray) -> np.ndarray:
+    axis = -2 if name == "W" and values.ndim == 5 else -1
+    centered = np.asarray(values, dtype=float) - np.mean(values, axis=axis, keepdims=True)
     return cast(np.ndarray, centered)
 
 
@@ -477,26 +535,42 @@ def _sanitize_metric(values: np.ndarray, *, fallback: float) -> np.ndarray:
     return metric
 
 
-def _freeze_parameter_dict(
-    raw: dict[str, np.ndarray],
-    *,
-    name: str,
-    ndim: int,
-    allow_negative: bool,
-) -> dict[str, np.ndarray]:
+def _freeze_parameter_samples(raw: dict[str, np.ndarray], *, name: str) -> dict[str, np.ndarray]:
     if not isinstance(raw, dict):
         raise TypeError(f"{name} must be a dict, got {type(raw).__name__}.")
     missing = [param for param in _PARAMETER_NAMES if param not in raw]
     if missing:
         raise ValueError(f"{name} is missing keys {missing!r}.")
     frozen: dict[str, np.ndarray] = {}
+    expected_ndim = {"W": 5, "b": 4}
     for param in _PARAMETER_NAMES:
         values = np.asarray(raw[param], dtype=float).copy()
+        ndim = expected_ndim[param]
         if values.ndim != ndim:
             raise ValueError(f"{name}[{param!r}] must be {ndim}-D, got shape {values.shape}.")
         if not np.all(np.isfinite(values)):
             raise ValueError(f"{name}[{param!r}] must contain only finite values.")
-        if not allow_negative and np.any(values < 0.0):
+        values.setflags(write=False)
+        frozen[param] = values
+    return frozen
+
+
+def _freeze_parameter_metrics(raw: dict[str, np.ndarray], *, name: str) -> dict[str, np.ndarray]:
+    if not isinstance(raw, dict):
+        raise TypeError(f"{name} must be a dict, got {type(raw).__name__}.")
+    missing = [param for param in _PARAMETER_NAMES if param not in raw]
+    if missing:
+        raise ValueError(f"{name} is missing keys {missing!r}.")
+    frozen: dict[str, np.ndarray] = {}
+    expected_ndim = {"W": 3, "b": 2}
+    for param in _PARAMETER_NAMES:
+        values = np.asarray(raw[param], dtype=float).copy()
+        ndim = expected_ndim[param]
+        if values.ndim != ndim:
+            raise ValueError(f"{name}[{param!r}] must be {ndim}-D, got shape {values.shape}.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{name}[{param!r}] must contain only finite values.")
+        if np.any(values < 0.0):
             raise ValueError(f"{name}[{param!r}] must contain non-negative values.")
         values.setflags(write=False)
         frozen[param] = values
