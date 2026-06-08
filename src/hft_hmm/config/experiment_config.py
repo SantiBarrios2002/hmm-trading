@@ -191,23 +191,28 @@ class ExperimentConfig:
         # default can be left unset at construction time.
         retrain_every_days = self.walk_forward.retrain_every_days
         assert retrain_every_days is not None
+        walk_forward: dict[str, Any] = {
+            "h_days": int(self.walk_forward.h_days),
+            "t_days": int(self.walk_forward.t_days),
+            "retrain_every_days": int(retrain_every_days),
+            "k_values": list(self.walk_forward.k_values),
+            "random_state": int(self.walk_forward.random_state),
+            "n_iter": int(self.walk_forward.n_iter),
+            "tol": float(self.walk_forward.tol),
+            "min_variance": float(self.walk_forward.min_variance),
+            "variance_floor_policy": str(self.walk_forward.variance_floor_policy),
+        }
+        if self.walk_forward.k_selection != "best_by_bic":
+            walk_forward["k_selection"] = self.walk_forward.k_selection
+            walk_forward["cv_folds"] = int(self.walk_forward.cv_folds)
+
         return {
             "data": self.data.to_dict(),
             "frequency": self.frequency,
             "cost_bps_per_turnover": float(self.cost_bps_per_turnover),
             "signal_policy": self.signal_policy,
             "signal_threshold": float(self.signal_threshold),
-            "walk_forward": {
-                "h_days": int(self.walk_forward.h_days),
-                "t_days": int(self.walk_forward.t_days),
-                "retrain_every_days": int(retrain_every_days),
-                "k_values": list(self.walk_forward.k_values),
-                "random_state": int(self.walk_forward.random_state),
-                "n_iter": int(self.walk_forward.n_iter),
-                "tol": float(self.walk_forward.tol),
-                "min_variance": float(self.walk_forward.min_variance),
-                "variance_floor_policy": str(self.walk_forward.variance_floor_policy),
-            },
+            "walk_forward": walk_forward,
             "notes": self.notes,
             "sha256": self.sha256,
         }
@@ -232,6 +237,8 @@ class ExperimentConfig:
             tol=float(wf_raw["tol"]),
             min_variance=float(wf_raw["min_variance"]),
             variance_floor_policy=wf_raw["variance_floor_policy"],
+            k_selection=wf_raw.get("k_selection", "best_by_bic"),
+            cv_folds=int(wf_raw.get("cv_folds", 5)),
         )
         return cls(
             data=DataSourceConfig.from_dict(data["data"]),

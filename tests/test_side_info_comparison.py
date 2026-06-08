@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 pytest.importorskip("torch")
 pytest.importorskip("pyro")
@@ -36,7 +37,7 @@ from hft_hmm.experiments.side_info_comparison import (
     comparison_id,
     run_side_info_comparison,
 )
-from hft_hmm.experiments.walk_forward import WalkForwardConfig, walk_forward
+from hft_hmm.experiments.walk_forward import WalkForwardConfig, WalkForwardWindow, walk_forward
 from hft_hmm.features.seasonality import SeasonalityConfig
 from hft_hmm.features.splines import SplinePredictorConfig
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig
@@ -52,6 +53,7 @@ SAMPLE_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
 SAMPLE_FIXTURE_SHA256 = "aedc597af42b6ec9f454642b1c09afb61e30fe0df6f34b5d35f0e2175b3e7a45"
 MONTH_FIXTURE_SHA256 = "c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_side_info_comparison.yaml"
+EXAMPLE_ENHANCED_CONFIG = REPO_ROOT / "configs" / "example_es_databento_enhanced.yaml"
 EXAMPLE_HMC_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_hmc.yaml"
 EXAMPLE_COMBINED_CONFIG = (
     REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_combined.yaml"
@@ -166,6 +168,52 @@ def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
     assert loaded.sha256 == cfg.sha256
     assert comparison_id(loaded) == comparison_id(cfg)
     assert len(comparison_id(cfg)) == 12
+
+
+def test_side_info_config_omits_k_selection_for_default_bic() -> None:
+    cfg = _make_config()
+    raw = cfg.to_dict()
+
+    assert cfg.walk_forward.k_selection == "best_by_bic"
+    assert "k_selection" not in raw["walk_forward"]
+    assert "cv_folds" not in raw["walk_forward"]
+    assert SideInfoComparisonConfig.from_dict(raw).walk_forward.k_selection == "best_by_bic"
+    assert SideInfoComparisonConfig.from_dict(raw).walk_forward.cv_folds == 5
+
+
+def test_side_info_config_serializes_cv_k_selection() -> None:
+    cfg = replace(
+        _make_config(),
+        walk_forward=WalkForwardConfig(
+            h_days=10,
+            t_days=5,
+            retrain_every_days=5,
+            k_values=(2, 3),
+            random_state=0,
+            n_iter=100,
+            tol=1e-4,
+            min_variance=1e-8,
+            variance_floor_policy="clamp",
+            k_selection="cv",
+            cv_folds=3,
+        ),
+    )
+    raw = cfg.to_dict()
+
+    assert raw["walk_forward"]["k_selection"] == "cv"
+    assert raw["walk_forward"]["cv_folds"] == 3
+    assert SideInfoComparisonConfig.from_dict(raw) == cfg
+
+
+def test_enhanced_bic_config_roundtrip_keeps_comparison_id_and_omits_cv_keys() -> None:
+    cfg = SideInfoComparisonConfig.from_yaml(EXAMPLE_ENHANCED_CONFIG)
+    canonical = yaml.safe_load(cfg.to_yaml_bytes())
+    roundtrip = SideInfoComparisonConfig.from_dict(canonical)
+
+    assert comparison_id(cfg) == "acf8bab1ab3a"
+    assert comparison_id(roundtrip) == "acf8bab1ab3a"
+    assert "k_selection" not in canonical["walk_forward"]
+    assert "cv_folds" not in canonical["walk_forward"]
 
 
 def test_example_config_loads() -> None:
@@ -399,6 +447,76 @@ def test_artifact_layout_is_written(comparison_artifacts) -> None:
             assert first_record["side_info_dim"] == 1
             assert first_record["num_epochs"] == comparison_artifacts.config.dmm.num_epochs
             assert "final_loss" in first_record
+
+
+def test_cv_selection_diagnostics_are_written_to_summary_and_log(tmp_path: Path) -> None:
+    summary = pd.DataFrame(
+        [
+            {
+                "n_periods": 1,
+                "cost_bps_per_turnover": 0.0,
+                "cumulative_return": 0.01,
+                "sharpe_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "hit_rate": 1.0,
+            },
+            {
+                "n_periods": 1,
+                "cost_bps_per_turnover": 0.0,
+                "cumulative_return": 0.01,
+                "sharpe_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "hit_rate": 1.0,
+            },
+        ],
+        index=pd.Index(["pre-cost", "post-cost"], name="mode"),
+    )
+    train_start = pd.Timestamp("2024-01-02 00:00:00", tz="UTC")
+    train_end = pd.Timestamp("2024-01-02 00:04:00", tz="UTC")
+    forecast_start = pd.Timestamp("2024-01-03 00:00:00", tz="UTC")
+    forecast_end = pd.Timestamp("2024-01-03 00:01:00", tz="UTC")
+    window = WalkForwardWindow(
+        index=0,
+        train_start=train_start,
+        train_end=train_end,
+        forecast_start=forecast_start,
+        forecast_end=forecast_end,
+        chosen_k=2,
+        log_likelihood=-10.0,
+        n_train_obs=5,
+        n_forecast_obs=2,
+        summary=summary,
+        bic_chosen_k=3,
+        cv_scores_by_k=((2, -0.5), (3, -0.75)),
+    )
+    signal = pd.Series([1, 1], index=pd.date_range(forecast_start, periods=2, freq="min"))
+    returns = pd.Series([0.01], index=pd.DatetimeIndex([forecast_end]))
+    result = side_info_module.SideInfoVariantResult(
+        variant=BASELINE_VARIANT,
+        chosen_k_per_window=(2,),
+        windows=(window,),
+        signal=signal,
+        pre_cost_returns=returns,
+        post_cost_returns=returns,
+        summary=summary,
+        cost_bps_per_turnover=0.0,
+        bic_chosen_k_per_window=(3,),
+        cv_scores_by_k_per_window=(((2, -0.5), (3, -0.75)),),
+    )
+
+    payload = side_info_module._variant_payload(BASELINE_VARIANT, "abc123", result)
+    log_path = tmp_path / "baseline.log.jsonl"
+    side_info_module._write_variant_log(log_path, result)
+    first_record = json.loads(log_path.read_text().splitlines()[0])
+
+    assert payload["chosen_k_per_window"] == [2]
+    assert payload["bic_chosen_k_per_window"] == [3]
+    assert payload["cv_mean_heldout_log_likelihood_by_k_per_window"] == [
+        {"2": -0.5, "3": -0.75}
+    ]
+    assert first_record["chosen_k"] == 2
+    assert first_record["bic_chosen_k"] == 3
+    assert first_record["cv_mean_heldout_log_likelihood_by_k"] == {"2": -0.5, "3": -0.75}
 
 
 @pytest.mark.parametrize(

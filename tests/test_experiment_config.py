@@ -124,6 +124,48 @@ def test_experiment_config_roundtrip_preserves_min_variance(tmp_path: Path) -> N
     assert loaded.walk_forward.min_variance == pytest.approx(2.5e-8)
 
 
+def test_experiment_config_omits_k_selection_for_default_bic() -> None:
+    cfg = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(
+            h_days=5,
+            t_days=1,
+            k_values=(2, 3),
+            random_state=7,
+        ),
+        sha256=SAMPLE_SHA256,
+    )
+    raw = cfg.to_dict()
+
+    assert cfg.walk_forward.k_selection == "best_by_bic"
+    assert "k_selection" not in raw["walk_forward"]
+    assert "cv_folds" not in raw["walk_forward"]
+    assert ExperimentConfig.from_dict(raw).walk_forward.k_selection == "best_by_bic"
+    assert ExperimentConfig.from_dict(raw).walk_forward.cv_folds == 5
+
+
+def test_experiment_config_serializes_cv_k_selection() -> None:
+    cfg = ExperimentConfig(
+        data=_csv_data(),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(
+            h_days=5,
+            t_days=1,
+            k_values=(2, 3),
+            random_state=7,
+            k_selection="cv",
+            cv_folds=3,
+        ),
+        sha256=SAMPLE_SHA256,
+    )
+    raw = cfg.to_dict()
+
+    assert raw["walk_forward"]["k_selection"] == "cv"
+    assert raw["walk_forward"]["cv_folds"] == 3
+    assert ExperimentConfig.from_dict(raw) == cfg
+
+
 def test_data_source_config_csv_requires_path() -> None:
     with pytest.raises(ValueError, match="requires path"):
         DataSourceConfig(kind="csv")
