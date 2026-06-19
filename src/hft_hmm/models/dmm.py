@@ -19,20 +19,30 @@ vector so the same module can be used in ablations without exogenous features.
 Variable-length mini-batches are represented as padded tensors plus
 ``seq_lengths``. The model and guide preserve the P0 spike's masking strategy so
 padded timesteps do not contribute to latent or observation log-probability.
+The ``fit_dmm()`` entry point seeds Python's ``random`` module, NumPy, Torch,
+and Pyro from ``DMMConfig.seed``. On CPU, the unit tests pin Torch to one
+thread and assert repeated SVI fits match within an absolute loss tolerance of
+``1e-6``; reproducibility is therefore documented as within-tolerance rather
+than bit-for-bit identical across all environments.
 
 References: Krishnan et al. (2017) §3-4
 """
 
 from __future__ import annotations
 
+import random
+from dataclasses import dataclass
 from typing import Final, cast
 
+import numpy as np
 import pyro
 import pyro.distributions as dist
 import pyro.poutine as poutine
 import torch
 import torch.nn as nn
 from pyro.distributions import TorchDistribution
+from pyro.infer import SVI, Trace_ELBO
+from pyro.optim import ClippedAdam
 from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pad_packed_sequence
 
 from hft_hmm.core import ENGINEERING_APPROXIMATION, PaperReference, reference
@@ -50,6 +60,95 @@ DEFAULT_RNN_DIM: Final[int] = 32
 DEFAULT_NUM_LAYERS: Final[int] = 1
 DEFAULT_DROPOUT_RATE: Final[float] = 0.0
 DEFAULT_MIN_SCALE: Final[float] = 1e-4
+DEFAULT_NUM_EPOCHS: Final[int] = 150
+DEFAULT_MINI_BATCH_SIZE: Final[int] = 20
+DEFAULT_LEARNING_RATE: Final[float] = 3e-4
+DEFAULT_BETA1: Final[float] = 0.96
+DEFAULT_BETA2: Final[float] = 0.999
+DEFAULT_CLIP_NORM: Final[float] = 10.0
+DEFAULT_LR_DECAY: Final[float] = 0.99996
+DEFAULT_WEIGHT_DECAY: Final[float] = 2.0
+DEFAULT_MIN_ANNEALING_FACTOR: Final[float] = 0.2
+DEFAULT_ANNEALING_EPOCHS: Final[int] = 1000
+DEFAULT_SEED: Final[int] = 54
+
+
+@dataclass(frozen=True)
+class DMMConfig:
+    """Hyperparameters for DMM architecture and SVI training.
+
+    The architecture fields map directly to :class:`DMM`. Training defaults are
+    lifted from the merged P0 Pyro spike, with ``rnn_dropout_rate=0.1`` as the
+    recommended optimization-time setting from that script.
+
+    Reproducibility note: :func:`fit_dmm` seeds Python's ``random`` module,
+    NumPy, Torch, and Pyro from ``seed`` before constructing the model and SVI
+    objects. The unit tests pin Torch to one CPU thread and assert repeated loss
+    histories agree within ``1e-6`` absolute tolerance; callers should treat the
+    fit as reproducible within tolerance rather than exactly identical across
+    machines or BLAS threading setups.
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    obs_dim: int = DEFAULT_OBS_DIM
+    z_dim: int = DEFAULT_LATENT_DIM
+    emission_dim: int = DEFAULT_EMISSION_DIM
+    transition_dim: int = DEFAULT_TRANSITION_DIM
+    rnn_dim: int = DEFAULT_RNN_DIM
+    side_info_dim: int = 0
+    num_layers: int = DEFAULT_NUM_LAYERS
+    rnn_dropout_rate: float = 0.1
+    min_scale: float = DEFAULT_MIN_SCALE
+    num_epochs: int = DEFAULT_NUM_EPOCHS
+    mini_batch_size: int = DEFAULT_MINI_BATCH_SIZE
+    learning_rate: float = DEFAULT_LEARNING_RATE
+    beta1: float = DEFAULT_BETA1
+    beta2: float = DEFAULT_BETA2
+    clip_norm: float = DEFAULT_CLIP_NORM
+    lr_decay: float = DEFAULT_LR_DECAY
+    weight_decay: float = DEFAULT_WEIGHT_DECAY
+    min_annealing_factor: float = DEFAULT_MIN_ANNEALING_FACTOR
+    annealing_epochs: int = DEFAULT_ANNEALING_EPOCHS
+    seed: int = DEFAULT_SEED
+
+    def __post_init__(self) -> None:
+        _validate_positive_int(self.obs_dim, "obs_dim")
+        _validate_positive_int(self.z_dim, "z_dim")
+        _validate_positive_int(self.emission_dim, "emission_dim")
+        _validate_positive_int(self.transition_dim, "transition_dim")
+        _validate_positive_int(self.rnn_dim, "rnn_dim")
+        _validate_nonnegative_int(self.side_info_dim, "side_info_dim")
+        _validate_positive_int(self.num_layers, "num_layers")
+        dropout = _validate_nonnegative_float(self.rnn_dropout_rate, "rnn_dropout_rate")
+        if dropout >= 1.0:
+            raise ValueError(f"rnn_dropout_rate must be < 1.0, got {dropout}.")
+        min_scale = _validate_positive_float(self.min_scale, "min_scale")
+
+        _validate_positive_int(self.num_epochs, "num_epochs")
+        _validate_positive_int(self.mini_batch_size, "mini_batch_size")
+        learning_rate = _validate_positive_float(self.learning_rate, "learning_rate")
+        beta1 = _validate_probability_open_interval(self.beta1, "beta1")
+        beta2 = _validate_probability_open_interval(self.beta2, "beta2")
+        clip_norm = _validate_positive_float(self.clip_norm, "clip_norm")
+        lr_decay = _validate_positive_float(self.lr_decay, "lr_decay")
+        weight_decay = _validate_nonnegative_float(self.weight_decay, "weight_decay")
+        min_annealing_factor = _validate_probability_closed_interval(
+            self.min_annealing_factor,
+            "min_annealing_factor",
+        )
+        _validate_nonnegative_int(self.annealing_epochs, "annealing_epochs")
+        _validate_nonnegative_int(self.seed, "seed")
+
+        object.__setattr__(self, "rnn_dropout_rate", dropout)
+        object.__setattr__(self, "min_scale", min_scale)
+        object.__setattr__(self, "learning_rate", learning_rate)
+        object.__setattr__(self, "beta1", beta1)
+        object.__setattr__(self, "beta2", beta2)
+        object.__setattr__(self, "clip_norm", clip_norm)
+        object.__setattr__(self, "lr_decay", lr_decay)
+        object.__setattr__(self, "weight_decay", weight_decay)
+        object.__setattr__(self, "min_annealing_factor", min_annealing_factor)
 
 
 class Emitter(nn.Module):
@@ -485,6 +584,213 @@ class DMM(nn.Module):
         )
 
 
+@dataclass(frozen=True)
+class DMMFitResult:
+    """Fitted DMM and per-epoch normalized loss history.
+
+    ``loss_history`` stores one normalized negative-ELBO value per training
+    epoch, scaled by the total number of observed (unpadded) timesteps in the
+    training batch. ``model`` is the fitted :class:`DMM` instance returned by
+    :func:`fit_dmm`.
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    config: DMMConfig
+    model: DMM
+    loss_history: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config, DMMConfig):
+            raise TypeError(f"config must be a DMMConfig, got {type(self.config).__name__}.")
+        if not isinstance(self.model, DMM):
+            raise TypeError(f"model must be a DMM, got {type(self.model).__name__}.")
+        normalized_history = tuple(float(value) for value in self.loss_history)
+        if len(normalized_history) != self.config.num_epochs:
+            raise ValueError(
+                "loss_history must contain one value per epoch; "
+                f"expected {self.config.num_epochs}, got {len(normalized_history)}."
+            )
+        if not all(np.isfinite(normalized_history)):
+            raise ValueError("loss_history must contain only finite values.")
+        object.__setattr__(self, "loss_history", normalized_history)
+
+
+def kl_annealing_factor(
+    *,
+    epoch: int,
+    minibatch_index: int,
+    num_minibatches: int,
+    min_annealing_factor: float,
+    annealing_epochs: int,
+) -> float:
+    """Return the KL weight for one zero-based SVI minibatch step.
+
+    The schedule ramps linearly from ``min_annealing_factor`` on the first
+    annealed step toward 1.0 over ``annealing_epochs * num_minibatches``
+    zero-based steps, then clamps to exactly 1.0 after the annealing window.
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    _validate_nonnegative_int(epoch, "epoch")
+    _validate_nonnegative_int(minibatch_index, "minibatch_index")
+    _validate_positive_int(num_minibatches, "num_minibatches")
+    if minibatch_index >= num_minibatches:
+        raise ValueError(
+            "minibatch_index must be strictly less than num_minibatches; "
+            f"got {minibatch_index} and {num_minibatches}."
+        )
+    min_factor = _validate_probability_closed_interval(
+        min_annealing_factor,
+        "min_annealing_factor",
+    )
+    _validate_nonnegative_int(annealing_epochs, "annealing_epochs")
+
+    total_annealing_steps = annealing_epochs * num_minibatches
+    if total_annealing_steps == 0:
+        return 1.0
+
+    global_step = epoch * num_minibatches + minibatch_index
+    if global_step >= total_annealing_steps:
+        return 1.0
+
+    factor = min_factor + (1.0 - min_factor) * (float(global_step) / float(total_annealing_steps))
+    return min(1.0, factor)
+
+
+def fit_dmm(
+    config: DMMConfig,
+    observations: torch.Tensor,
+    side_info: torch.Tensor | None = None,
+    seq_lengths: torch.Tensor | None = None,
+) -> DMMFitResult:
+    """Fit a DMM with SVI and KL annealing on padded sequences.
+
+    Args:
+        config: Architecture and training hyperparameters.
+        observations: Padded observation tensor with shape
+            ``(batch, time, obs_dim)``.
+        side_info: Optional aligned side-information tensor with shape
+            ``(batch, time, side_info_dim)``.
+        seq_lengths: Optional valid lengths with shape ``(batch,)``. When
+            omitted, every sequence is treated as full length.
+
+    Returns:
+        A :class:`DMMFitResult` containing the fitted model and one normalized
+        negative-ELBO value per epoch.
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    if not isinstance(config, DMMConfig):
+        raise TypeError(f"config must be a DMMConfig, got {type(config).__name__}.")
+
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    pyro.set_rng_seed(config.seed)
+    pyro.clear_param_store()
+
+    observations_prepared = _coerce_observations(observations, obs_dim=config.obs_dim)
+    batch_size, time_steps, _ = observations_prepared.shape
+    _validate_positive_int(batch_size, "batch_size")
+    _validate_positive_int(time_steps, "time_steps")
+
+    seq_lengths_prepared = _coerce_seq_lengths(
+        seq_lengths,
+        batch_size=batch_size,
+        time_steps=time_steps,
+        device=observations_prepared.device,
+    )
+    if torch.any(seq_lengths_prepared <= 0):
+        raise ValueError("fit_dmm requires every seq_length to be at least 1.")
+
+    side_info_prepared: torch.Tensor | None
+    if config.side_info_dim > 0 or side_info is not None:
+        side_info_prepared = _coerce_side_info_batch(
+            side_info,
+            batch_size=batch_size,
+            time_steps=time_steps,
+            side_info_dim=config.side_info_dim,
+            device=observations_prepared.device,
+            dtype=observations_prepared.dtype,
+        )
+    else:
+        side_info_prepared = None
+
+    dmm = DMM(
+        obs_dim=config.obs_dim,
+        z_dim=config.z_dim,
+        emission_dim=config.emission_dim,
+        transition_dim=config.transition_dim,
+        rnn_dim=config.rnn_dim,
+        side_info_dim=config.side_info_dim,
+        num_layers=config.num_layers,
+        rnn_dropout_rate=config.rnn_dropout_rate,
+        min_scale=config.min_scale,
+    )
+    dmm = cast(DMM, dmm.to(device=observations_prepared.device, dtype=observations_prepared.dtype))
+    dmm.train()
+
+    optimizer = ClippedAdam(
+        {
+            "lr": config.learning_rate,
+            "betas": (config.beta1, config.beta2),
+            "clip_norm": config.clip_norm,
+            "lrd": config.lr_decay,
+            "weight_decay": config.weight_decay,
+        }
+    )
+    svi = SVI(dmm.model, dmm.guide, optimizer, loss=Trace_ELBO())
+
+    num_sequences = batch_size
+    num_minibatches = (num_sequences + config.mini_batch_size - 1) // config.mini_batch_size
+    train_time_slices = float(seq_lengths_prepared.sum().item())
+    loss_history: list[float] = []
+
+    for epoch in range(config.num_epochs):
+        epoch_loss = 0.0
+        shuffled_indices = np.arange(num_sequences, dtype=np.int64)
+        np.random.shuffle(shuffled_indices)
+
+        for minibatch_index in range(num_minibatches):
+            start = minibatch_index * config.mini_batch_size
+            stop = min((minibatch_index + 1) * config.mini_batch_size, num_sequences)
+            batch_indices = torch.as_tensor(
+                shuffled_indices[start:stop],
+                dtype=torch.long,
+                device=observations_prepared.device,
+            )
+            observation_batch = observations_prepared.index_select(0, batch_indices)
+            seq_length_batch = seq_lengths_prepared.index_select(0, batch_indices)
+            side_info_batch = (
+                side_info_prepared.index_select(0, batch_indices)
+                if side_info_prepared is not None
+                else None
+            )
+            annealing_factor = kl_annealing_factor(
+                epoch=epoch,
+                minibatch_index=minibatch_index,
+                num_minibatches=num_minibatches,
+                min_annealing_factor=config.min_annealing_factor,
+                annealing_epochs=config.annealing_epochs,
+            )
+            epoch_loss += float(
+                svi.step(
+                    observation_batch,
+                    side_info_batch,
+                    seq_length_batch,
+                    annealing_factor,
+                )
+            )
+
+        loss_history.append(epoch_loss / train_time_slices)
+
+    dmm.eval()
+    return DMMFitResult(config=config, model=dmm, loss_history=tuple(loss_history))
+
+
 def _coerce_observations(observations: torch.Tensor, *, obs_dim: int) -> torch.Tensor:
     if observations.ndim != 3:
         raise ValueError(
@@ -640,6 +946,24 @@ def _validate_nonnegative_float(value: float, name: str) -> float:
         raise ValueError(f"{name} must be finite, got {value!r}.")
     if validated < 0.0:
         raise ValueError(f"{name} must be nonnegative, got {validated}.")
+    return validated
+
+
+def _validate_probability_open_interval(value: float, name: str) -> float:
+    validated = float(value)
+    if not torch.isfinite(torch.tensor(validated)):
+        raise ValueError(f"{name} must be finite, got {value!r}.")
+    if not 0.0 < validated < 1.0:
+        raise ValueError(f"{name} must lie strictly between 0 and 1, got {validated}.")
+    return validated
+
+
+def _validate_probability_closed_interval(value: float, name: str) -> float:
+    validated = float(value)
+    if not torch.isfinite(torch.tensor(validated)):
+        raise ValueError(f"{name} must be finite, got {value!r}.")
+    if not 0.0 <= validated <= 1.0:
+        raise ValueError(f"{name} must lie between 0 and 1 inclusive, got {validated}.")
     return validated
 
 
