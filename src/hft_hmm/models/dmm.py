@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Final, cast
 
 import numpy as np
+import pandas as pd
 import pyro
 import pyro.distributions as dist
 import pyro.poutine as poutine
@@ -791,6 +792,87 @@ def fit_dmm(
     return DMMFitResult(config=config, model=dmm, loss_history=tuple(loss_history))
 
 
+def expected_next_returns_from_dmm(
+    fitted: DMM | DMMFitResult,
+    returns: pd.Series | np.ndarray,
+    side_info: pd.Series | pd.DataFrame | np.ndarray | None = None,
+) -> pd.Series:
+    """Return the causal DMM forecast surface ``E[Δy_{t+1} | Δy_{1:t}]``.
+
+    The guide is a reverse-time smoother, so this helper avoids look-ahead by
+    running the guide on each expanding prefix ``Δy_{1:t}`` separately,
+    propagating the deterministic guide mean at ``z_t`` one step ahead through
+    the transition network, and mapping that next-latent mean through the
+    emission network. The one-step-ahead transition uses ``side_info[t]``,
+    matching the existing side-information forecast convention in the IOHMM
+    path: the exogenous row observed at bar ``t`` parameterizes the forecast
+    for bar ``t + 1``. At the horizon edge, the final forecast therefore uses
+    the last available side-information row rather than reading a future row.
+
+    Returns a finite ``pd.Series`` aligned to the input return index (or a
+    positional ``RangeIndex`` when ``returns`` is a raw numpy array).
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    dmm = _coerce_dmm_forecast_model(fitted)
+    if dmm.obs_dim != 1:
+        raise ValueError(
+            "expected_next_returns_from_dmm currently supports only obs_dim=1 "
+            f"models, got obs_dim={dmm.obs_dim}."
+        )
+
+    return_values, return_index = _coerce_return_forecast_series(returns)
+    n_obs = return_values.shape[0]
+    parameter = next(dmm.parameters())
+    device = parameter.device
+    dtype = parameter.dtype
+
+    observations = torch.as_tensor(
+        return_values.reshape(1, n_obs, dmm.obs_dim),
+        device=device,
+        dtype=dtype,
+    )
+    side_info_tensor = _coerce_forecast_side_info(
+        side_info,
+        return_index=return_index,
+        n_obs=n_obs,
+        side_info_dim=dmm.side_info_dim,
+        device=device,
+        dtype=dtype,
+    )
+
+    was_training = dmm.training
+    dmm.eval()
+    expected = np.empty(n_obs, dtype=float)
+
+    try:
+        with torch.no_grad():
+            for t in range(n_obs):
+                prefix_length = t + 1
+                prefix_observations = observations[:, :prefix_length, :]
+                prefix_side_info = (
+                    side_info_tensor[:, :prefix_length, :] if side_info_tensor is not None else None
+                )
+                filtered_latent_mean = _filtered_latent_mean_for_prefix(
+                    dmm,
+                    prefix_observations=prefix_observations,
+                    prefix_side_info=prefix_side_info,
+                )
+                transition_side_info = (
+                    side_info_tensor[:, t, :] if side_info_tensor is not None else None
+                )
+                next_latent_loc, _ = dmm.trans(filtered_latent_mean, transition_side_info)
+                emission_loc, _ = dmm.emitter(next_latent_loc)
+                expected[t] = float(emission_loc.squeeze().item())
+    finally:
+        dmm.train(was_training)
+
+    if not np.all(np.isfinite(expected)):
+        raise ValueError("DMM expected_next_returns must contain only finite values.")
+    return pd.Series(expected, index=return_index, name="expected_next_returns")
+
+
 def _coerce_observations(observations: torch.Tensor, *, obs_dim: int) -> torch.Tensor:
     if observations.ndim != 3:
         raise ValueError(
@@ -915,6 +997,114 @@ def _pad_and_reverse(
 ) -> torch.Tensor:
     unpacked, _ = pad_packed_sequence(rnn_output, batch_first=True, total_length=total_length)
     return _reverse_sequences(unpacked, seq_lengths)
+
+
+def _coerce_dmm_forecast_model(fitted: DMM | DMMFitResult) -> DMM:
+    if isinstance(fitted, DMMFitResult):
+        return fitted.model
+    if isinstance(fitted, DMM):
+        return fitted
+    raise TypeError(f"fitted must be a DMM or DMMFitResult, got {type(fitted).__name__}.")
+
+
+def _coerce_return_forecast_series(
+    returns: pd.Series | np.ndarray,
+) -> tuple[np.ndarray, pd.Index]:
+    if isinstance(returns, pd.Series):
+        values = np.asarray(returns, dtype=float)
+        index = returns.index
+    else:
+        values = np.asarray(returns, dtype=float)
+        index = pd.RangeIndex(start=0, stop=values.shape[0])
+    if values.ndim != 1:
+        raise ValueError(f"returns must be one-dimensional, got shape {values.shape}.")
+    if values.size < 1:
+        raise ValueError("returns must contain at least one observation.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("returns must contain only finite values; drop NaN/inf first.")
+    return values.copy(), index
+
+
+def _coerce_forecast_side_info(
+    side_info: pd.Series | pd.DataFrame | np.ndarray | None,
+    *,
+    return_index: pd.Index,
+    n_obs: int,
+    side_info_dim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
+    if side_info_dim == 0:
+        if side_info is not None:
+            raise ValueError("side_info was provided but side_info_dim=0 for this DMM.")
+        return None
+    if side_info is None:
+        raise ValueError(
+            "side_info must be provided when forecasting with a DMM that expects exogenous inputs."
+        )
+
+    if isinstance(side_info, pd.DataFrame):
+        side_values = side_info.to_numpy(dtype=float, copy=True)
+        _validate_forecast_side_info_index(side_info.index, return_index)
+    elif isinstance(side_info, pd.Series):
+        side_values = side_info.to_numpy(dtype=float, copy=True).reshape(-1, 1)
+        _validate_forecast_side_info_index(side_info.index, return_index)
+    else:
+        side_values = np.asarray(side_info, dtype=float)
+        if side_values.ndim == 1:
+            side_values = side_values.reshape(-1, 1)
+
+    if side_values.ndim != 2:
+        raise ValueError(
+            "side_info must be one-dimensional or two-dimensional, "
+            f"got shape {side_values.shape}."
+        )
+    expected_shape = (n_obs, side_info_dim)
+    if side_values.shape != expected_shape:
+        raise ValueError(f"side_info must have shape {expected_shape}, got {side_values.shape}.")
+    if not np.all(np.isfinite(side_values)):
+        raise ValueError("side_info must contain only finite values; drop NaN/inf first.")
+    return torch.as_tensor(side_values.reshape(1, n_obs, side_info_dim), device=device, dtype=dtype)
+
+
+def _validate_forecast_side_info_index(side_info_index: pd.Index, return_index: pd.Index) -> None:
+    if not side_info_index.equals(return_index):
+        raise ValueError("side_info index must exactly match the return-series index.")
+
+
+def _filtered_latent_mean_for_prefix(
+    dmm: DMM,
+    *,
+    prefix_observations: torch.Tensor,
+    prefix_side_info: torch.Tensor | None,
+) -> torch.Tensor:
+    batch_size, time_steps, _ = prefix_observations.shape
+    seq_lengths = torch.full(
+        (batch_size,),
+        time_steps,
+        dtype=torch.long,
+        device=prefix_observations.device,
+    )
+    observations_prepared, _, _, seq_lengths_prepared = dmm._prepare_inputs(
+        observations=prefix_observations,
+        side_info=prefix_side_info,
+        seq_lengths=seq_lengths,
+    )
+    h_0_contiguous = dmm.h_0.expand(dmm.num_layers, batch_size, dmm.rnn_dim).contiguous()
+    rnn_output, _ = dmm.rnn(
+        _pack_reversed_sequences(observations_prepared, seq_lengths_prepared),
+        h_0_contiguous,
+    )
+    rnn_output_padded = _pad_and_reverse(
+        rnn_output,
+        seq_lengths_prepared,
+        total_length=time_steps,
+    )
+    z_prev = dmm.z_q_0.expand(batch_size, dmm.z_dim)
+    for step in range(time_steps):
+        z_loc, _ = dmm.combiner(z_prev, rnn_output_padded[:, step, :])
+        z_prev = z_loc
+    return z_prev
 
 
 def _validate_positive_int(value: int, name: str) -> None:

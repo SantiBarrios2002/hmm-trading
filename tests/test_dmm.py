@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 
 import numpy as np
+import pandas as pd
 import pytest
 
 pytest.importorskip("torch")
@@ -19,11 +20,14 @@ from hft_hmm.models.dmm import (  # noqa: E402
     DMM,
     Combiner,
     DMMConfig,
+    DMMFitResult,
     Emitter,
     GatedTransition,
+    expected_next_returns_from_dmm,
     fit_dmm,
     kl_annealing_factor,
 )
+from hft_hmm.strategy.signals import build_signal  # noqa: E402
 
 
 def _synthetic_training_batch() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -44,6 +48,70 @@ def _synthetic_training_batch() -> tuple[torch.Tensor, torch.Tensor, torch.Tenso
     observations = slope + curvature + offsets
     seq_lengths = torch.full((batch_size,), time_steps, dtype=torch.long)
     return observations, side_info, seq_lengths
+
+
+@pytest.fixture(scope="module")
+def fitted_dmm_for_forecast() -> DMMFitResult:
+    observations, side_info, seq_lengths = _synthetic_training_batch()
+    config = DMMConfig(
+        obs_dim=1,
+        z_dim=3,
+        emission_dim=6,
+        transition_dim=6,
+        rnn_dim=7,
+        side_info_dim=2,
+        num_epochs=4,
+        mini_batch_size=4,
+        learning_rate=1e-2,
+        beta1=0.9,
+        beta2=0.999,
+        clip_norm=5.0,
+        lr_decay=1.0,
+        weight_decay=0.0,
+        rnn_dropout_rate=0.0,
+        min_annealing_factor=0.2,
+        annealing_epochs=2,
+        seed=31,
+    )
+    previous_threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(1)
+        return fit_dmm(config, observations, side_info, seq_lengths)
+    finally:
+        torch.set_num_threads(previous_threads)
+
+
+def _forecast_window_inputs(
+    length: int = 6,
+) -> tuple[pd.Series, pd.DataFrame]:
+    index = pd.date_range("2024-01-02 09:30:00", periods=length, freq="min")
+    returns = pd.Series(np.linspace(-0.015, 0.018, num=length), index=index, name="returns")
+    side_info = pd.DataFrame(
+        {
+            "level": np.linspace(-1.0, 1.0, num=length),
+            "curvature": np.linspace(0.25, 1.25, num=length),
+        },
+        index=index,
+    )
+    return returns, side_info
+
+
+def _constant_forecast_dmm(*, constant: float, side_info_dim: int) -> DMM:
+    dmm = DMM(
+        obs_dim=1,
+        z_dim=2,
+        emission_dim=4,
+        transition_dim=4,
+        rnn_dim=4,
+        side_info_dim=side_info_dim,
+        rnn_dropout_rate=0.0,
+    )
+    with torch.no_grad():
+        for parameter in dmm.parameters():
+            parameter.zero_()
+        dmm.emitter.lin_hidden_to_loc.bias.fill_(constant)
+    dmm.eval()
+    return dmm
 
 
 def test_module_declares_engineering_approximation() -> None:
@@ -318,3 +386,77 @@ def test_fit_dmm_is_reproducible_within_tolerance_at_one_thread() -> None:
         torch.set_num_threads(previous_threads)
 
     np.testing.assert_allclose(first.loss_history, second.loss_history, atol=atol, rtol=0.0)
+
+
+def test_expected_next_returns_from_dmm_returns_index_aligned_series(
+    fitted_dmm_for_forecast: DMMFitResult,
+) -> None:
+    forecast_returns, forecast_side_info = _forecast_window_inputs()
+
+    expected = expected_next_returns_from_dmm(
+        fitted_dmm_for_forecast,
+        forecast_returns,
+        forecast_side_info,
+    )
+
+    assert isinstance(expected, pd.Series)
+    assert len(expected) == len(forecast_returns)
+    pd.testing.assert_index_equal(expected.index, forecast_returns.index)
+    assert np.all(np.isfinite(expected.to_numpy()))
+
+
+def test_expected_next_returns_from_dmm_is_causal_on_prefixes(
+    fitted_dmm_for_forecast: DMMFitResult,
+) -> None:
+    forecast_returns, forecast_side_info = _forecast_window_inputs(length=7)
+    prefix_length = 4
+
+    full_expected = expected_next_returns_from_dmm(
+        fitted_dmm_for_forecast,
+        forecast_returns,
+        forecast_side_info,
+    )
+    prefix_expected = expected_next_returns_from_dmm(
+        fitted_dmm_for_forecast,
+        forecast_returns.iloc[:prefix_length],
+        forecast_side_info.iloc[:prefix_length],
+    )
+
+    pd.testing.assert_series_equal(full_expected.iloc[:prefix_length], prefix_expected)
+
+
+def test_expected_next_returns_from_dmm_collapses_on_near_constant_series() -> None:
+    constant_level = 0.0125
+    forecast_model = _constant_forecast_dmm(constant=constant_level, side_info_dim=1)
+    index = pd.date_range("2024-01-03 09:30:00", periods=5, freq="min")
+    returns = pd.Series(
+        constant_level + np.array([0.0, 1e-4, -1e-4, 5e-5, -5e-5]),
+        index=index,
+    )
+    side_info = pd.Series(np.linspace(-0.5, 0.5, num=len(index)), index=index, name="feature")
+
+    expected = expected_next_returns_from_dmm(forecast_model, returns, side_info)
+
+    assert np.all(np.isfinite(expected.to_numpy()))
+    np.testing.assert_allclose(
+        expected.to_numpy(),
+        np.full(len(expected), constant_level),
+        atol=1e-6,
+        rtol=0.0,
+    )
+
+
+def test_expected_next_returns_from_dmm_feeds_build_signal(
+    fitted_dmm_for_forecast: DMMFitResult,
+) -> None:
+    forecast_returns, forecast_side_info = _forecast_window_inputs()
+    expected = expected_next_returns_from_dmm(
+        fitted_dmm_for_forecast,
+        forecast_returns,
+        forecast_side_info,
+    )
+
+    signal = build_signal(expected, policy="sign")
+
+    assert isinstance(signal, pd.Series)
+    pd.testing.assert_index_equal(signal.index, forecast_returns.index)
