@@ -358,7 +358,8 @@ class DMM(nn.Module):
 
         with pyro.plate("z_minibatch", observations_prepared.size(0)):
             for t in pyro.markov(range(time_steps)):
-                z_loc, z_scale = self.trans(z_prev, side_info_prepared[:, t, :])
+                side_info_step = side_info_prepared[:, t, :] if self.side_info_dim > 0 else None
+                z_loc, z_scale = self.trans(z_prev, side_info_step)
                 with poutine.scale(scale=float(annealing_factor)):
                     z_t = pyro.sample(
                         f"z_{t + 1}",
@@ -426,7 +427,9 @@ class DMM(nn.Module):
         rnn_output, _ = self.rnn(
             _pack_reversed_sequences(observations_prepared, seq_lengths_prepared), h_0_contiguous
         )
-        rnn_output_padded = _pad_and_reverse(rnn_output, seq_lengths_prepared)
+        rnn_output_padded = _pad_and_reverse(
+            rnn_output, seq_lengths_prepared, total_length=time_steps
+        )
         z_prev = self.z_q_0.expand(observations_prepared.size(0), self.z_dim)
 
         with pyro.plate("z_minibatch", observations_prepared.size(0)):
@@ -601,8 +604,10 @@ def _pack_reversed_sequences(sequences: torch.Tensor, seq_lengths: torch.Tensor)
     )
 
 
-def _pad_and_reverse(rnn_output: PackedSequence, seq_lengths: torch.Tensor) -> torch.Tensor:
-    unpacked, _ = pad_packed_sequence(rnn_output, batch_first=True)
+def _pad_and_reverse(
+    rnn_output: PackedSequence, seq_lengths: torch.Tensor, *, total_length: int
+) -> torch.Tensor:
+    unpacked, _ = pad_packed_sequence(rnn_output, batch_first=True, total_length=total_length)
     return _reverse_sequences(unpacked, seq_lengths)
 
 

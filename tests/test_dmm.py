@@ -155,3 +155,47 @@ def test_masking_ignores_padded_timesteps_in_model_log_prob() -> None:
     trace_alt.compute_log_prob()
 
     assert trace_base.log_prob_sum() == trace_alt.log_prob_sum()
+
+
+def test_dmm_runs_without_side_info() -> None:
+    pyro.clear_param_store()
+    batch_size = 2
+    time_steps = 4
+    obs_dim = 1
+    z_dim = 3
+    observations = torch.randn(batch_size, time_steps, obs_dim)
+
+    dmm = DMM(obs_dim=obs_dim, z_dim=z_dim, rnn_dim=8)  # side_info_dim defaults to 0
+    assert dmm.side_info_dim == 0
+
+    guide_trace = poutine.trace(dmm.guide).get_trace(observations, None, None, 1.0)
+    model_trace = poutine.trace(poutine.replay(dmm.model, trace=guide_trace)).get_trace(
+        observations, None, None, 1.0
+    )
+    for trace in (guide_trace, model_trace):
+        trace.compute_log_prob()
+
+    assert model_trace.nodes["obs_y_4"]["value"].shape == (batch_size, obs_dim)
+    assert torch.isfinite(torch.as_tensor(model_trace.log_prob_sum()))
+    assert torch.isfinite(torch.as_tensor(guide_trace.log_prob_sum()))
+
+
+def test_guide_handles_padding_wider_than_longest_sequence() -> None:
+    pyro.clear_param_store()
+    batch_size = 2
+    time_steps = 5
+    obs_dim = 1
+    side_info_dim = 2
+    z_dim = 3
+    observations = torch.randn(batch_size, time_steps, obs_dim)
+    side_info = torch.randn(batch_size, time_steps, side_info_dim)
+    seq_lengths = torch.tensor([3, 2], dtype=torch.long)  # max length 3 < time_steps 5
+
+    dmm = DMM(obs_dim=obs_dim, z_dim=z_dim, side_info_dim=side_info_dim, rnn_dim=8)
+
+    guide_trace = poutine.trace(dmm.guide).get_trace(observations, side_info, seq_lengths, 1.0)
+    guide_trace.compute_log_prob()
+
+    assert guide_trace.nodes["z_1"]["value"].shape == (batch_size, z_dim)
+    assert guide_trace.nodes[f"z_{time_steps}"]["value"].shape == (batch_size, z_dim)
+    assert torch.isfinite(torch.as_tensor(guide_trace.log_prob_sum()))
