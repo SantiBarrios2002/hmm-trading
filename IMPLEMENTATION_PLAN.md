@@ -362,7 +362,7 @@ required for Gates A–J to pass.
 
 ### Must pass
 - A Pyro-based DMM (Krishnan et al. 2017 — paper PDF in `docs/`) wraps emission MLP, transition MLP gated on side information, and a structured inference network.
-- The model exposes a `predict_next_return` API and is registered as a variant in the side-information comparison.
+- The DMM produces a per-window `expected_next_returns` series (`E[Δy_{t+1} | Δy_{1:t}]`) consumed by the signal layer (`strategy/signals.py`, `build_signal`) — the repo's actual forecast contract; there is no `predict_next_return` method. It is registered in `EXPECTED_VARIANTS` and dispatched through the existing `_checkpointed_stage` per-variant runner machinery (alongside `_run_side_info_variant` / `_run_default_hmm_variant`), with no parallel code path.
 - Walk-forward integration uses the same data loaders and evaluation layer as the HMM variants; any sampling-frequency change (e.g., 5-min training to keep compute tractable) is documented and recorded in the config.
 - Training settings (epochs, batch size, optimizer, KL annealing schedule) are recorded in the run artifact for reproducibility.
 - A negative-result discussion is acceptable and expected — if DMM does not beat the HMM on Sharpe, the result is reported alongside the conviction-weighted negative-result precedent.
