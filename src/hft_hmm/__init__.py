@@ -52,6 +52,7 @@ from hft_hmm.experiments import (
 from hft_hmm.experiments.runner import NON_REPRODUCIBLE_WARNING, RunArtifacts, run_experiment
 from hft_hmm.experiments.side_info_comparison import (
     BASELINE_VARIANT,
+    DMM_VARIANT,
     EXPECTED_VARIANTS,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_VARIANT,
@@ -60,6 +61,7 @@ from hft_hmm.experiments.side_info_comparison import (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     ContinuousSideInfoVariantWindow,
+    DmmVariantWindow,
     SideInfoComparisonArtifacts,
     SideInfoComparisonConfig,
     SideInfoComparisonResult,
@@ -134,6 +136,7 @@ __all__ = [
     "EXPERIMENT_CONFIG_REFERENCE",
     "INTRADAY_SEASONALITY_REFERENCE",
     "BASELINE_VARIANT",
+    "DMM_VARIANT",
     "EXPECTED_VARIANTS",
     "NON_REPRODUCIBLE_WARNING",
     "SEASONALITY_HMC_CONTINUOUS_VARIANT",
@@ -198,6 +201,7 @@ __all__ = [
     "cumulative_return",
     "daily_annualized_sharpe_ratio",
     "default_labels",
+    "DmmVariantWindow",
     "ewma_volatility",
     "fit_continuous_iohmm",
     "fit_piecewise_linear_regression",
