@@ -179,6 +179,13 @@ professors. It complements the methodology justification at the end of
 covers the *replication* decisions; this section covers the *extension*
 decisions.
 
+> **Status note (2026-06-19).** The 2026-05-17 scope-widening to "100%
+> paper-faithful" temporarily re-added MCMC-on-Θ (Gate O) and bridge sampling
+> (Gate P) to the active plan, contradicting §7.1 and §7.5 below. That
+> re-inclusion has been reverted: Gates O and P are deferred to documented
+> future work, and the active path now runs Gate M → Gate L (the DMM). This
+> roadmap and `IMPLEMENTATION_PLAN.md` §4/§5 are consistent again.
+
 ### 7.1 Why we do not replicate the paper's full MCMC pipeline
 
 The paper presents Baum-Welch and Metropolis-Hastings MCMC on Θ as

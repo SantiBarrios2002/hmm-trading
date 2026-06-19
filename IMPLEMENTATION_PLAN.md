@@ -419,8 +419,16 @@ from PLR segments, transition matrix `A` held at uniform `(1/K) · ones((K, K))`
 
 ---
 
-## Gate O — MCMC on Θ for the Gaussian HMM (faithful replication)
+## Gate O — MCMC on Θ for the Gaussian HMM (faithful replication) ⏸️ DEFERRED — documented future work
 **Covers:** §2.5 paper-faithful trading-model table. Issue and branch to be opened when work starts (suggested: `feat/NN-mcmc-hmm`).
+
+> **Deferred (2026-06-19).** Not on the active path. The MCMC contribution is
+> already delivered by Gate K (HMC on the IOHMM transition logits), so this
+> gate's only added value is table completeness (6/6 paper models) for an
+> outcome the paper and this project both predict to be a null — MH on Θ for a
+> well-identified diagonal-Gaussian HMM lands within numerical noise of the
+> Baum-Welch fit. The spec below is retained should the gate be revisited; the
+> deferral rationale is `dmm_mcmc_roadmap.md` §7.1 and §4 of this document.
 
 Paper §3 fits Θ = {π, A, μ, σ²} by Metropolis-Hastings as an alternative to
 Baum-Welch. Paper Figure 8 reports the MCMC HMM as **worse** than Baum-Welch
@@ -444,8 +452,14 @@ finding (or refutes it) on the local Databento ES sample.
 
 ---
 
-## Gate P — Bridge sampling for K selection (faithful replication)
+## Gate P — Bridge sampling for K selection (faithful replication) ⏸️ DEFERRED — documented future work
 **Covers:** §2.5 paper-faithful K-selection trio. Issue and branch to be opened when work starts (suggested: `feat/NN-bridge-sampling`). **Depends on Gate O** — reuses MCMC HMM posterior samples.
+
+> **Deferred (2026-06-19).** Depends on Gate O (also deferred) for posterior
+> samples, and its standalone value is marginal: the BIC-overfit-on-`h_days=60`
+> story is already resolved by Gate M's cross-validation route. Bridge sampling
+> would add a confirming *third* K-selection witness, not a new result. Retained
+> as documented future work; rationale in `dmm_mcmc_roadmap.md` §7.5 and §4 below.
 
 Paper §4's third K-selection route is Bayesian marginal likelihood via
 bridge sampling. With Gate O's MCMC posterior samples in hand, bridge
@@ -524,22 +538,49 @@ Two tiers, reflecting the scope widening of 2026-05-17:
 This level corresponds to the "targeted replication" framing the project
 originally operated under. It is enough to clear the coursework brief.
 
-### 100% paper-faithful + extensions (current target)
+### Paper-faithful core + extensions (current target, revised 2026-06-19)
 
 In addition to the minimum above:
 
-- **Trading-model table reaches 6/6 paper variants:** Default HMM (Gate N) and MCMC HMM (Gate O) are landed alongside the existing four.
-- **K-selection trio reaches 3/3 paper routes:** cross-validation (Gate M) and bridge sampling (Gate P) are landed alongside AIC/BIC.
+- **Trading-model table reaches 5/6 paper variants:** Default HMM (Gate N ✅) lands alongside the existing four (Baum-Welch HMM, vol-ratio IOHMM, seasonality IOHMM, long-only). The 6th, MCMC HMM (Gate O), is **deliberately deferred** — see scope note below.
+- **K-selection reaches 2/3 paper routes:** cross-validation (Gate M) lands alongside AIC/BIC. The third route, bridge sampling (Gate P), is **deliberately deferred** — see scope note below.
 - **Combined IOHMM (Gate Q) ✅ landed** (PR #53) so the §4 trading-variant inventory matches the paper's combined-predictor experiment in addition to the single-predictor ones — headline outcome is a negative result on Sharpe.
-- **Extensions land in order:** Gate K (HMC IOHMM, ✅ shipped), Gate L (DMM benchmark).
+- **Extensions land in order:** Gate K (HMC IOHMM, ✅ shipped), then Gate L (DMM benchmark) — the next active extension once Gate M lands.
 
-A strong project at this level passes every gate listed in §3 (A–Q).
+A strong project at this level passes Gates A–N and Q, lands the Gate L
+extension, and documents Gates O and P as deferred future work with the
+rationale below.
 
-The BIC overfit on `h_days=60` documented in `docs/results_vs_paper.md`
-should be revisited once Gates M and P land: if CV and/or bridge sampling
-pick K=2 on `h_days=60`, the negative result becomes "BIC fails on long
-windows; the paper's other two routes correctly resolve it" — a cleaner
-defense story than the current "BIC fails and we don't have the other two."
+#### Scope decision (2026-06-19): defer Gate O and Gate P
+
+Gates O (MCMC on Θ) and P (bridge sampling) are removed from the active path
+and demoted to documented future work. Rationale:
+
+- **The MCMC contribution is already delivered by Gate K.** Gate K puts HMC on
+  the IOHMM transition logits `(W, b)` — a problem where MCMC *changes* the
+  answer rather than restating it. MH on Θ for a well-identified
+  diagonal-Gaussian HMM converges to essentially the Baum-Welch estimate, so
+  Gate O's expected outcome is a null result the paper (Fig 8) already reports.
+  It buys table completeness (6/6) at ~1–2 weeks of compute for no new finding.
+- **The BIC-overfit story is already carried by Gate M.** Bridge sampling
+  (Gate P) would add a confirming *third* K-selection route, but cross-validation
+  (Gate M) resolving the overfit is sufficient for the clean positive narrative;
+  Gate P also depends on Gate O, which is deferred.
+- **The deep-model benchmark (Gate L) is the higher-novelty, longer-pole work.**
+  Starting it sooner is the better use of remaining runway than shipping two
+  expected-null results for inventory completeness.
+
+This reverts the 2026-05-17 scope-widening's re-inclusion of Gate O/P and
+re-aligns the plan with `dmm_mcmc_roadmap.md` §7.1 and §7.5, which already
+argued for the same exclusion. The defense framing — "MCMC was placed where it
+changes the answer (Gate K), not where it restates the EM fit (Gate O)" — is
+the same one written there.
+
+The BIC overfit on `h_days=60` documented in `docs/results_vs_paper.md` is
+revisited once Gate M lands: if cross-validation picks K=2 on `h_days=60`, the
+negative result becomes "BIC fails on long windows; the paper's
+cross-validation route correctly resolves it" — a clean defense story that does
+not require the deferred bridge-sampling route.
 
 ---
 
@@ -572,18 +613,22 @@ constraint: Gates M and P should both be exercised on `h_days=23` *and*
 `h_days=60` so the BIC overfit can be compared against CV and bridge
 sampling head-to-head on the same windows.
 
-12. **Gate N — Default HMM variant** (~0.5–1 day, no dependencies). Closes the trading-table gap; smallest piece of work in path B.
+12. **Gate N — Default HMM variant** ✅ shipped (PR #51). Closed the trading-table gap; smallest piece of work in path B.
 13. **Gate Q — Combined vol-ratio + seasonality IOHMM** ✅ shipped (PR #53, run `22bbd2c8d0a4`). Closed the §4 combined-predictor coverage gap; the hypothesized Sharpe lift was **falsified** (0.5453, below either single predictor).
-14. **Gate M — Cross-validation for K selection** (~1 week, no dependencies). Resolves the BIC overfit empirically; standalone, no MCMC machinery needed.
-15. **Gate O — MCMC on Θ** (~1–2 weeks, no hard dependencies but reuses NumPyro infra from Gate K). Replicates the paper's "MCMC HMM underperforms BW" finding (or refutes it on the local sample).
-16. **Gate P — Bridge sampling for K** (~0.5 week, **depends on Gate O** for posterior samples). Completes the §4 K-selection trio.
-17. **Gate L — Deep Markov Model benchmark** (~3–4 weeks, depends on nothing in path-B but typically scheduled last because it is the largest single piece of work). Closes the modern-alternative story.
+14. **Gate M — Cross-validation for K selection** (~1 week, no dependencies). Resolves the BIC overfit empirically; standalone, no MCMC machinery needed. ← **in progress** (branch `feat/50-cv-k-selection`).
+15. **Gate L — Deep Markov Model benchmark** (~3–4 weeks, depends on nothing in path-B; the largest single piece of work). Closes the modern-alternative story. **Next active extension after Gate M.**
+
+**Deferred (2026-06-19), documented future work — see §4 scope decision:**
+
+- **Gate O — MCMC on Θ** (~1–2 weeks, would reuse NumPyro infra from Gate K). Expected-null result (MH on Θ ≈ Baum-Welch); the MCMC contribution is already delivered by Gate K.
+- **Gate P — Bridge sampling for K** (~0.5 week, depends on Gate O). Confirming third K-selection route; the BIC-overfit story is already carried by Gate M.
 
 ### Phase 3 calendar estimate
 
-At focused pace: ~7–9 weeks total. Gate N lands first (in days), then Gates
-Q + M land in roughly 2 weeks each, Gate O takes 1–2 weeks, Gate P chases
-Gate O within a half-week, and Gate L is the long tail.
+With Gates O and P deferred (see §4), the active remaining path is Gate M
+(~1 week, in progress) followed by Gate L (~3–4 weeks). Gates N and Q are
+already shipped. The deferred Gate O (~1–2 weeks) and Gate P (~0.5 week) are
+not counted in the remaining estimate.
 
 This keeps the repo academically coherent and easy to review, with each
 phase a clean "what's faithfully replicated, what extends the paper" line
