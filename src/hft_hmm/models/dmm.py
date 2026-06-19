@@ -5,16 +5,21 @@ described by Krishnan, Shalit, and Sontag (2017, §3-4), adapted for return
 sequences with optional exogenous side information. The latent process is a
 nonlinear Gaussian state-space model:
 
-``z_t | z_{t-1}, x_t ~ Normal(mu_trans(z_{t-1}, x_t), sigma_trans(z_{t-1}, x_t))``
+``z_t | z_{t-1}, x_{t-1} ~ Normal(mu_trans(z_{t-1}, x_{t-1}), sigma_trans(z_{t-1}, x_{t-1}))``
 
 ``y_t | z_t ~ Normal(mu_emit(z_t), sigma_emit(z_t))``
 
 ``q(z_t | z_{t-1}, y_{t:T}) = Normal(mu_q(z_{t-1}, h_t), sigma_q(z_{t-1}, h_t))``
 
 where ``h_t`` is produced by a reverse-time recurrent network over the observed
-return sequence. The transition network accepts optional side information
-``x_t``; when no side information is provided, the model falls back to a zero
-vector so the same module can be used in ablations without exogenous features.
+return sequence. Side information gates the transition **predictively**, IOHMM-style:
+the exogenous row ``x_{t-1}`` governs the ``(t-1) -> t`` transition (the first
+latent has no incoming row and is left ungated). This matches the bucketed/continuous
+IOHMM convention where ``A(x_t)`` parameterizes the ``t -> t+1`` step, so the causal
+one-step-ahead forecast in :func:`expected_next_returns_from_dmm` (which uses
+``x_t`` for the ``t -> t+1`` transition) is consistent with training. When no side
+information is provided the model falls back to a zero vector, so the same module can
+be used in ablations without exogenous features.
 
 Variable-length mini-batches are represented as padded tensors plus
 ``seq_lengths``. The model and guide preserve the P0 spike's masking strategy so
@@ -458,7 +463,15 @@ class DMM(nn.Module):
 
         with pyro.plate("z_minibatch", observations_prepared.size(0)):
             for t in pyro.markov(range(time_steps)):
-                side_info_step = side_info_prepared[:, t, :] if self.side_info_dim > 0 else None
+                # Predictive (IOHMM-style) gating: the exogenous row x[t-1]
+                # governs the (t-1)->t transition, so the causal one-step-ahead
+                # forecast (which uses x[t] for the t->t+1 transition) is
+                # consistent with training. The first latent has no incoming
+                # exogenous row (initial transition) and is left ungated.
+                if self.side_info_dim > 0 and t > 0:
+                    side_info_step = side_info_prepared[:, t - 1, :]
+                else:
+                    side_info_step = None
                 z_loc, z_scale = self.trans(z_prev, side_info_step)
                 with poutine.scale(scale=float(annealing_factor)):
                     z_t = pyro.sample(
@@ -803,11 +816,11 @@ def expected_next_returns_from_dmm(
     running the guide on each expanding prefix ``Δy_{1:t}`` separately,
     propagating the deterministic guide mean at ``z_t`` one step ahead through
     the transition network, and mapping that next-latent mean through the
-    emission network. The one-step-ahead transition uses ``side_info[t]``,
-    matching the existing side-information forecast convention in the IOHMM
-    path: the exogenous row observed at bar ``t`` parameterizes the forecast
-    for bar ``t + 1``. At the horizon edge, the final forecast therefore uses
-    the last available side-information row rather than reading a future row.
+    emission network. The one-step-ahead transition uses ``side_info[t]``: under
+    the model's predictive (IOHMM-style) gating, ``x_t`` is exactly the exogenous
+    row that governs the ``t -> t+1`` transition, so this forecast is consistent
+    with how the DMM was trained (no one-step input lag). Only causally available
+    rows are read; the forecast for bar ``t + 1`` uses ``x_t``, never a future row.
 
     Returns a finite ``pd.Series`` aligned to the input return index (or a
     positional ``RangeIndex`` when ``returns`` is a raw numpy array).

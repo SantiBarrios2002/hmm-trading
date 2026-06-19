@@ -303,6 +303,52 @@ def test_guide_handles_padding_wider_than_longest_sequence() -> None:
     assert torch.isfinite(torch.as_tensor(guide_trace.log_prob_sum()))
 
 
+def test_model_transition_gating_is_predictive() -> None:
+    # Predictive (IOHMM-style) gating: x[k] governs the k -> k+1 transition, so it
+    # parameterizes the latent that emits y[k+1] (site "z_{k+2}"), not the
+    # contemporaneous latent for y[k] (site "z_{k+1}"). Conditioning all latents
+    # isolates the transition-site log-probs.
+    pyro.clear_param_store()
+    torch.manual_seed(0)
+    batch_size = 1
+    time_steps = 5
+    obs_dim = 1
+    side_info_dim = 2
+    z_dim = 3
+    changed_index = 2  # interior bar k
+
+    observations = torch.randn(batch_size, time_steps, obs_dim)
+    side_info = torch.randn(batch_size, time_steps, side_info_dim)
+    side_info_alt = side_info.clone()
+    side_info_alt[:, changed_index, :] += torch.tensor([3.0, -3.0])
+
+    dmm = DMM(obs_dim=obs_dim, z_dim=z_dim, side_info_dim=side_info_dim, rnn_dim=6)
+    latent_values = {f"z_{step + 1}": torch.randn(batch_size, z_dim) for step in range(time_steps)}
+    conditioned = poutine.condition(dmm.model, data=latent_values)
+
+    def latent_site_log_probs(side: torch.Tensor) -> dict[str, float]:
+        trace = poutine.trace(conditioned).get_trace(observations, side, None, 1.0)
+        trace.compute_log_prob()
+        return {
+            name: float(node["log_prob"].sum().item())
+            for name, node in trace.nodes.items()
+            if name.startswith("z_")
+        }
+
+    base = latent_site_log_probs(side_info)
+    alt = latent_site_log_probs(side_info_alt)
+
+    predictive_site = f"z_{changed_index + 2}"  # latent emitting y[k+1]
+    contemporaneous_site = f"z_{changed_index + 1}"  # latent emitting y[k]
+    for name in base:
+        if name == predictive_site:
+            assert not np.isclose(base[name], alt[name]), f"{name} should change with x[k]."
+        else:
+            assert np.isclose(base[name], alt[name]), f"{name} should be unchanged by x[k]."
+    # The contemporaneous latent in particular must not move (rules out the old lag).
+    assert np.isclose(base[contemporaneous_site], alt[contemporaneous_site])
+
+
 def test_kl_annealing_factor_matches_expected_schedule() -> None:
     kwargs = {
         "num_minibatches": 5,
