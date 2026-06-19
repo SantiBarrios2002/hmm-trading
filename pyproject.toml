@@ -29,7 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 dmm = [
   "pyro-ppl==1.9.1",
-  "torch==2.12.1+cpu"
+  "torch==2.12.1"
 ]
 
 dev = [

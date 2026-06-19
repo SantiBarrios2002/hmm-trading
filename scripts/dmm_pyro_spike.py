@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import pickle
 import random
 import time
-from collections import namedtuple
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -28,29 +29,64 @@ from torch.nn.utils.rnn import pad_sequence
 PUBLISHED_PYRO_TEST_NLL = 6.87
 PAPER_TEST_NLL = 6.93
 
-dset = namedtuple("dset", ["name", "url", "filename"])
 
-JSB_CHORALES = dset(
-    "jsb_chorales",
-    "https://github.com/pyro-ppl/datasets/blob/master/polyphonic/jsb_chorales.pickle?raw=true",
-    "jsb_chorales.pkl",
+@dataclass(frozen=True)
+class DatasetSpec:
+    name: str
+    url: str
+    filename: str
+    sha256: str
+
+
+JSB_CHORALES = DatasetSpec(
+    name="jsb_chorales",
+    url="https://github.com/pyro-ppl/datasets/blob/master/polyphonic/jsb_chorales.pickle?raw=true",
+    filename="jsb_chorales.pickle",
+    sha256="69dc4c3e52800959ac0ab3b82aa3e5f55285ce64f1705acb3e3a8ef77a5c051c",
 )
 
 
-def get_data_directory(path: str) -> str:
-    return os.path.abspath(path)
+def default_data_directory() -> Path:
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    cache_root = Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
+    return cache_root / "hft-hmm" / "dmm-spike"
 
 
-def process_data(base_path: str, dataset: dset, min_note: int = 21, note_range: int = 88) -> None:
-    output = os.path.join(base_path, dataset.filename)
-    if os.path.exists(output):
-        return
+def _sha256_digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_dataset_bytes(payload: bytes, dataset: DatasetSpec) -> None:
+    digest = _sha256_digest(payload)
+    if digest != dataset.sha256:
+        raise ValueError(
+            f"SHA-256 mismatch for {dataset.name}: expected {dataset.sha256}, got {digest}"
+        )
+
+
+def _download_dataset_bytes(data_dir: Path, dataset: DatasetSpec, timeout_seconds: int) -> bytes:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    dataset_path = data_dir / dataset.filename
+    if dataset_path.exists():
+        payload = dataset_path.read_bytes()
+        try:
+            _validate_dataset_bytes(payload, dataset)
+            return payload
+        except ValueError:
+            dataset_path.unlink()
 
     print(f"downloading and processing raw data: {dataset.name}")
     request = Request(dataset.url, headers={"User-Agent": "hft-hmm-dmm-spike/0"})
-    with urlopen(request) as response:
-        data = pickle.load(response)
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = response.read()
+    _validate_dataset_bytes(payload, dataset)
+    dataset_path.write_bytes(payload)
+    return payload
 
+
+def process_data(
+    data: dict[str, Any], min_note: int = 21, note_range: int = 88
+) -> dict[str, dict[str, Any]]:
     processed_dataset: dict[str, dict[str, Any]] = {}
     for split, data_split in data.items():
         processed_dataset[split] = {}
@@ -66,17 +102,14 @@ def process_data(base_path: str, dataset: dset, min_note: int = 21, note_range: 
                 if len(note_slice) > 0:
                     processed_sequence[t, note_slice] = 1.0
             processed_dataset[split]["sequences"].append(processed_sequence)
-
-    with open(output, "wb") as handle:
-        pickle.dump(processed_dataset, handle, pickle.HIGHEST_PROTOCOL)
+    return processed_dataset
 
 
-def load_data(dataset: dset, data_dir: str) -> dict[str, dict[str, Any]]:
-    os.makedirs(data_dir, exist_ok=True)
-    process_data(data_dir, dataset)
-    file_loc = os.path.join(data_dir, dataset.filename)
-    with open(file_loc, "rb") as handle:
-        loaded = pickle.load(handle)
+def load_data(
+    dataset: DatasetSpec, data_dir: Path, timeout_seconds: int
+) -> dict[str, dict[str, Any]]:
+    payload = _download_dataset_bytes(data_dir, dataset, timeout_seconds)
+    loaded = process_data(pickle.loads(payload))
 
     for split in loaded.values():
         sequences = split["sequences"]
@@ -274,15 +307,8 @@ def vectorized_eval_batch(
     sequences: torch.Tensor, seq_lengths: torch.Tensor, n_eval_samples: int
 ) -> tuple[torch.Tensor, torch.nn.utils.rnn.PackedSequence, torch.Tensor, torch.Tensor]:
     def rep(tensor: torch.Tensor) -> torch.Tensor:
-        rep_shape = torch.Size([tensor.size(0) * n_eval_samples]) + tensor.size()[1:]
-        repeat_dims = [1] * len(tensor.size())
-        repeat_dims[0] = n_eval_samples
-        return (
-            tensor.repeat(repeat_dims)
-            .reshape(n_eval_samples, -1)
-            .transpose(1, 0)
-            .reshape(rep_shape)
-        )
+        expanded = tensor.unsqueeze(1).expand(tensor.size(0), n_eval_samples, *tensor.shape[1:])
+        return expanded.reshape(tensor.size(0) * n_eval_samples, *tensor.shape[1:])
 
     expanded_seq_lengths = rep(seq_lengths)
     expanded_sequences = rep(sequences)
@@ -309,9 +335,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("/tmp/hft_hmm_dmm_spike_data"),
+        default=default_data_directory(),
         help="Directory for the JSB Chorales download/cache.",
     )
+    parser.add_argument("--download-timeout", type=int, default=30)
     parser.add_argument(
         "--summary-json",
         type=Path,
@@ -335,8 +362,7 @@ def main() -> None:
     pyro.set_rng_seed(args.seed)
     pyro.clear_param_store()
 
-    data_dir = get_data_directory(str(args.data_dir))
-    data = load_data(JSB_CHORALES, data_dir)
+    data = load_data(JSB_CHORALES, args.data_dir, args.download_timeout)
 
     training_seq_lengths = data["train"]["sequence_lengths"]
     training_data_sequences = data["train"]["sequences"]
@@ -390,21 +416,20 @@ def main() -> None:
 
     def do_evaluation() -> tuple[float, float]:
         dmm.rnn.eval()
-        val_nll = (
-            svi.evaluate_loss(val_batch, val_batch_reversed, val_batch_mask, val_batch_lengths)
-            / float(torch.sum(val_batch_lengths))
-        )
-        test_nll = (
-            svi.evaluate_loss(test_batch, test_batch_reversed, test_batch_mask, test_batch_lengths)
-            / float(torch.sum(test_batch_lengths))
-        )
+        val_nll = svi.evaluate_loss(
+            val_batch, val_batch_reversed, val_batch_mask, val_batch_lengths
+        ) / float(torch.sum(val_batch_lengths))
+        test_nll = svi.evaluate_loss(
+            test_batch, test_batch_reversed, test_batch_mask, test_batch_lengths
+        ) / float(torch.sum(test_batch_lengths))
         dmm.rnn.train()
         return val_nll, test_nll
 
     epoch_times: list[float] = []
     eval_history: list[dict[str, float | int]] = []
-    best_test_nll = math.inf
-    best_test_epoch = -1
+    best_val_nll = math.inf
+    best_val_epoch = -1
+    test_nll_at_best_val = math.nan
     last_train_nll = math.nan
     start_time = time.perf_counter()
 
@@ -458,9 +483,10 @@ def main() -> None:
                 "test_nll": test_nll,
             }
             eval_history.append(eval_item)
-            if test_nll < best_test_nll:
-                best_test_nll = test_nll
-                best_test_epoch = epoch + 1
+            if val_nll < best_val_nll:
+                best_val_nll = val_nll
+                best_val_epoch = epoch + 1
+                test_nll_at_best_val = test_nll
             print(json.dumps({"event": "eval", **eval_item}), flush=True)
 
     total_seconds = time.perf_counter() - start_time
@@ -476,8 +502,9 @@ def main() -> None:
         "eval_samples": args.eval_samples,
         "torch_threads": torch.get_num_threads(),
         "last_train_normalized_negative_elbo": last_train_nll,
-        "best_test_nll": best_test_nll,
-        "best_test_epoch": best_test_epoch,
+        "best_val_nll": best_val_nll,
+        "best_val_epoch": best_val_epoch,
+        "test_nll_at_best_val": test_nll_at_best_val,
         "final_val_nll": eval_history[-1]["val_nll"] if eval_history else None,
         "final_test_nll": eval_history[-1]["test_nll"] if eval_history else None,
         "mean_epoch_seconds": float(np.mean(epoch_times)),
