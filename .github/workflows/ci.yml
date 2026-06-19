@@ -23,7 +23,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          # CPU torch wheel first (the [dmm] extra can't pin the CPU index);
+          # 2.12.1+cpu satisfies the extra's torch==2.12.1 pin.
+          pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,dmm]"
 
       - name: Run Ruff
         run: ruff check .

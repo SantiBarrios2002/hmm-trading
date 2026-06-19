@@ -5,12 +5,17 @@ from __future__ import annotations
 import importlib
 
 import numpy as np
-import pyro
-import pyro.poutine as poutine
-import torch
+import pytest
 
-from hft_hmm.core import ENGINEERING_APPROXIMATION, module_category
-from hft_hmm.models.dmm import (
+pytest.importorskip("torch")
+pytest.importorskip("pyro")
+
+import pyro  # noqa: E402
+import pyro.poutine as poutine  # noqa: E402
+import torch  # noqa: E402
+
+from hft_hmm.core import ENGINEERING_APPROXIMATION, module_category  # noqa: E402
+from hft_hmm.models.dmm import (  # noqa: E402
     DMM,
     Combiner,
     DMMConfig,
