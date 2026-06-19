@@ -114,7 +114,6 @@ def load_data(
     for split in loaded.values():
         sequences = split["sequences"]
         split["sequences"] = pad_sequence(sequences, batch_first=True).type(torch.Tensor)
-        split["sequence_lengths"] = split["sequence_lengths"].to(device=torch.Tensor().device)
     return loaded
 
 
@@ -342,8 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--summary-json",
         type=Path,
-        default=Path("/tmp/hft_hmm_dmm_spike_summary.json"),
-        help="Optional JSON summary output path.",
+        default=default_data_directory() / "spike_summary.json",
+        help="JSON summary output path (defaults under the user cache dir, not /tmp).",
     )
     parser.add_argument("--torch-threads", type=int, default=0)
     return parser
