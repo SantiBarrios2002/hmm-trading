@@ -201,6 +201,20 @@ def test_config_rejects_invalid_subconfigs() -> None:
         SideInfoComparisonConfig(**base, dmm={"num_epochs": 2})  # type: ignore[arg-type]
 
 
+def test_config_rejects_nonzero_dmm_side_info_dim() -> None:
+    # dmm.side_info_dim is derived per window from the side-info feature; a non-zero
+    # config value is vestigial and would vary the comparison_id without changing the
+    # trained model, so it is rejected.
+    base = dict(
+        data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE_CSV)),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(h_days=10, t_days=2, retrain_every_days=2),
+        sha256=SAMPLE_FIXTURE_SHA256,
+    )
+    with pytest.raises(ValueError, match="side_info_dim"):
+        SideInfoComparisonConfig(**base, dmm=DMMConfig(side_info_dim=2))
+
+
 # ---------------------------------------------------------------------------
 # Runner integration
 # ---------------------------------------------------------------------------
@@ -732,11 +746,13 @@ def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
         captured["forecast_side_info"] = side_info_arg.copy()
         return pd.Series(0.0, index=returns_arg.index, name="expected_next_returns")
 
+    # _run_dmm_variant lazily imports fit_dmm/expected_next_returns_from_dmm from
+    # hft_hmm.models.dmm at call time (to keep torch optional), so patch the source
+    # module. _build_feature stays a module-level symbol in side_info_comparison.
     monkeypatch.setattr(side_info_module, "_build_feature", fake_build_feature)
-    monkeypatch.setattr(side_info_module, "fit_dmm", fake_fit_dmm)
+    monkeypatch.setattr("hft_hmm.models.dmm.fit_dmm", fake_fit_dmm)
     monkeypatch.setattr(
-        side_info_module,
-        "expected_next_returns_from_dmm",
+        "hft_hmm.models.dmm.expected_next_returns_from_dmm",
         fake_expected_next_returns_from_dmm,
     )
 

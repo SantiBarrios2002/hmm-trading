@@ -49,11 +49,10 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 
 import numpy as np
 import pandas as pd
-import torch
 import yaml
 from scipy.special import logsumexp
 
@@ -93,7 +92,6 @@ from hft_hmm.features.volatility_ratio import VolatilityRatioConfig, volatility_
 from hft_hmm.inference import filter_from_result
 from hft_hmm.inference.forward_filter import forward_filter
 from hft_hmm.models.default_hmm import fit_default_hmm
-from hft_hmm.models.dmm import DMMConfig, expected_next_returns_from_dmm, fit_dmm
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult, GaussianHMMWrapper
 from hft_hmm.models.iohmm_approx import (
     BoundaryMode,
@@ -118,6 +116,12 @@ from hft_hmm.strategy.signals import (
     _DISCRETE_SIGNAL_POLICIES,
     _VALID_SIGNAL_POLICIES,
 )
+
+if TYPE_CHECKING:
+    # torch/pyro live behind the optional [dmm] extra; keep them out of the
+    # module import path so `import hft_hmm` stays torch-free. The DMM variant
+    # lazily imports them at call time.
+    from hft_hmm.models.dmm import DMMConfig
 
 __category__: Final[str] = EVALUATION_LAYER
 SIDE_INFO_COMPARISON_REFERENCE: Final[PaperReference] = reference(
@@ -166,6 +170,13 @@ _HMC_CONTINUOUS_VARIANTS: Final[tuple[str, ...]] = (
 # ---------------------------------------------------------------------------
 
 
+def _default_dmm_config() -> DMMConfig:
+    """Build the default DMMConfig, importing it lazily to keep torch optional."""
+    from hft_hmm.models.dmm import DMMConfig
+
+    return DMMConfig()
+
+
 @dataclass(frozen=True)
 class SideInfoComparisonConfig:
     """Recipe for one Gate H side-information comparison run.
@@ -185,7 +196,7 @@ class SideInfoComparisonConfig:
     spline: SplinePredictorConfig = field(default_factory=SplinePredictorConfig)
     bucketed_transition: BucketedTransitionConfig = field(default_factory=BucketedTransitionConfig)
     continuous_iohmm: ContinuousIOHMMConfig = field(default_factory=ContinuousIOHMMConfig)
-    dmm: DMMConfig = field(default_factory=DMMConfig)
+    dmm: DMMConfig = field(default_factory=_default_dmm_config)
     vol_ratio: VolatilityRatioConfig = field(default_factory=VolatilityRatioConfig)
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
     cost_bps_per_turnover: float = 0.0
@@ -220,8 +231,15 @@ class SideInfoComparisonConfig:
                 "continuous_iohmm must be a ContinuousIOHMMConfig, "
                 f"got {type(self.continuous_iohmm).__name__}."
             )
+        from hft_hmm.models.dmm import DMMConfig
+
         if not isinstance(self.dmm, DMMConfig):
             raise TypeError(f"dmm must be a DMMConfig, got {type(self.dmm).__name__}.")
+        if self.dmm.side_info_dim != 0:
+            raise ValueError(
+                "dmm.side_info_dim is derived from the side-info feature at runtime "
+                "(the DMM variant overrides it per window); set it to 0 in the config."
+            )
         if not isinstance(self.vol_ratio, VolatilityRatioConfig):
             raise TypeError(
                 "vol_ratio must be a VolatilityRatioConfig, "
@@ -405,6 +423,8 @@ class SideInfoComparisonConfig:
             rhat_threshold=float(ci_raw.get("rhat_threshold", 1.05)),
             ess_bulk_threshold=int(ci_raw.get("ess_bulk_threshold", 200)),
         )
+        from hft_hmm.models.dmm import DMMConfig
+
         dmm_raw = raw.get("dmm", {})
         if not isinstance(dmm_raw, Mapping):
             raise ValueError(f"dmm must be a mapping; got {type(dmm_raw).__name__}.")
@@ -1477,6 +1497,10 @@ def _run_dmm_variant(
     baseline_windows: tuple[WalkForwardWindow, ...],
 ) -> SideInfoVariantResult:
     """Run the DMM benchmark on the same windows as the baseline."""
+    import torch
+
+    from hft_hmm.models.dmm import expected_next_returns_from_dmm, fit_dmm
+
     if config.dmm.obs_dim != 1:
         raise ValueError(f"config.dmm.obs_dim must be 1, got {config.dmm.obs_dim}.")
 
