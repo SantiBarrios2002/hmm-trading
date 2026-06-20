@@ -19,6 +19,27 @@ data:
   path: tests/fixtures/es_1min_month.csv
   start: null
   symbol: null
+dmm:
+  annealing_epochs: 1
+  beta1: 0.96
+  beta2: 0.999
+  clip_norm: 10.0
+  emission_dim: 8
+  learning_rate: 0.0003
+  lr_decay: 0.99996
+  min_annealing_factor: 0.2
+  min_scale: 0.0001
+  mini_batch_size: 20
+  num_epochs: 2
+  num_layers: 1
+  obs_dim: 1
+  rnn_dim: 8
+  rnn_dropout_rate: 0.1
+  seed: 54
+  side_info_dim: 0
+  transition_dim: 8
+  weight_decay: 2.0
+  z_dim: 4
 frequency: 1min
 notes: Gate H/K side-information comparison on January 2024 ES CSV fixture; baseline
   vs bucketed and HMC continuous volatility-ratio and intraday-seasonality
