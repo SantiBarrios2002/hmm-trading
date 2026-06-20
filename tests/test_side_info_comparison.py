@@ -210,8 +210,8 @@ def test_enhanced_bic_config_roundtrip_keeps_comparison_id_and_omits_cv_keys() -
     canonical = yaml.safe_load(cfg.to_yaml_bytes())
     roundtrip = SideInfoComparisonConfig.from_dict(canonical)
 
-    assert comparison_id(cfg) == "acf8bab1ab3a"
-    assert comparison_id(roundtrip) == "acf8bab1ab3a"
+    assert comparison_id(cfg) == "0a65973954d4"
+    assert comparison_id(roundtrip) == "0a65973954d4"
     assert "k_selection" not in canonical["walk_forward"]
     assert "cv_folds" not in canonical["walk_forward"]
 
