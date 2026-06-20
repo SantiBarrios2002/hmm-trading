@@ -14,12 +14,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("pyro")
+
 from hft_hmm.config.experiment_config import DataSourceConfig
 from hft_hmm.core import EVALUATION_LAYER, StateGrid, module_category
 from hft_hmm.experiments.side_info_comparison import (
     _CHECKPOINT_BASELINE_WF,
     BASELINE_VARIANT,
     DEFAULT_HMM_VARIANT,
+    DMM_VARIANT,
     EXPECTED_VARIANTS,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_VARIANT,
@@ -27,6 +31,7 @@ from hft_hmm.experiments.side_info_comparison import (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     VOLATILITY_RATIO_VARIANT,
     ContinuousSideInfoVariantWindow,
+    DmmVariantWindow,
     SideInfoComparisonConfig,
     comparison_id,
     run_side_info_comparison,
@@ -35,6 +40,7 @@ from hft_hmm.experiments.walk_forward import WalkForwardConfig, walk_forward
 from hft_hmm.features.seasonality import SeasonalityConfig
 from hft_hmm.features.splines import SplinePredictorConfig
 from hft_hmm.features.volatility_ratio import VolatilityRatioConfig
+from hft_hmm.models.dmm import DMMConfig
 from hft_hmm.models.gaussian_hmm import GaussianHMMResult
 from hft_hmm.models.iohmm_approx import BucketedTransitionConfig, BucketedTransitionResult
 from hft_hmm.models.iohmm_continuous import ContinuousIOHMMConfig
@@ -42,8 +48,9 @@ from hft_hmm.models.iohmm_continuous import ContinuousIOHMMConfig
 side_info_module = importlib.import_module("hft_hmm.experiments.side_info_comparison")
 
 REPO_ROOT = Path(__file__).parent.parent
-FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "es_1min_month.csv"
-FIXTURE_SHA256 = "c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34"
+SAMPLE_FIXTURE_CSV = REPO_ROOT / "tests" / "fixtures" / "es_1min_sample.csv"
+SAMPLE_FIXTURE_SHA256 = "aedc597af42b6ec9f454642b1c09afb61e30fe0df6f34b5d35f0e2175b3e7a45"
+MONTH_FIXTURE_SHA256 = "c81161b1932361e119483a37fa27b2e16ce39020bcfcc3e871812c5cb7a9ca34"
 EXAMPLE_CONFIG = REPO_ROOT / "configs" / "example_es_side_info_comparison.yaml"
 EXAMPLE_HMC_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_hmc.yaml"
 EXAMPLE_COMBINED_CONFIG = (
@@ -60,14 +67,14 @@ BUCKETED_VARIANTS = {
 }
 
 
-def _make_config(*, fixture_path: str = str(FIXTURE_CSV)) -> SideInfoComparisonConfig:
+def _make_config(*, fixture_path: str = str(SAMPLE_FIXTURE_CSV)) -> SideInfoComparisonConfig:
     return SideInfoComparisonConfig(
         data=DataSourceConfig(kind="csv", path=fixture_path),
-        frequency="1min",
+        frequency="5min",
         walk_forward=WalkForwardConfig(
-            h_days=10,
-            t_days=5,
-            retrain_every_days=5,
+            h_days=3,
+            t_days=1,
+            retrain_every_days=1,
             k_values=(2,),
             random_state=0,
             n_iter=100,
@@ -84,11 +91,31 @@ def _make_config(*, fixture_path: str = str(FIXTURE_CSV)) -> SideInfoComparisonC
             rhat_threshold=10.0,
             ess_bulk_threshold=1,
         ),
+        dmm=DMMConfig(
+            obs_dim=1,
+            z_dim=2,
+            emission_dim=4,
+            transition_dim=4,
+            rnn_dim=4,
+            num_layers=1,
+            rnn_dropout_rate=0.0,
+            num_epochs=2,
+            mini_batch_size=1,
+            learning_rate=5e-3,
+            beta1=0.9,
+            beta2=0.999,
+            clip_norm=5.0,
+            lr_decay=1.0,
+            weight_decay=0.0,
+            min_annealing_factor=0.2,
+            annealing_epochs=1,
+            seed=7,
+        ),
         vol_ratio=VolatilityRatioConfig(fast_window=50, slow_window=100),
         seasonality=SeasonalityConfig(bucket_minutes=1, exchange_tz="America/Chicago"),
         cost_bps_per_turnover=1.0,
         notes="test",
-        sha256=FIXTURE_SHA256,
+        sha256=SAMPLE_FIXTURE_SHA256,
     )
 
 
@@ -117,6 +144,8 @@ def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
     assert loaded.bucketed_transition.n_buckets == cfg.bucketed_transition.n_buckets
     assert loaded.bucketed_transition.boundary_mode == cfg.bucketed_transition.boundary_mode
     assert loaded.continuous_iohmm.num_samples == cfg.continuous_iohmm.num_samples
+    assert loaded.dmm.num_epochs == cfg.dmm.num_epochs
+    assert loaded.dmm.learning_rate == cfg.dmm.learning_rate
     assert SideInfoComparisonConfig.from_dict(loaded.to_dict()) == loaded
     assert loaded.vol_ratio.fast_window == cfg.vol_ratio.fast_window
     assert loaded.seasonality.bucket_minutes == cfg.seasonality.bucket_minutes
@@ -129,7 +158,7 @@ def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
 def test_example_config_loads() -> None:
     cfg = SideInfoComparisonConfig.from_yaml(EXAMPLE_CONFIG)
     assert cfg.frequency == "1min"
-    assert cfg.sha256 == FIXTURE_SHA256
+    assert cfg.sha256 == MONTH_FIXTURE_SHA256
     assert cfg.walk_forward.k_values == (2,)
     assert cfg.continuous_iohmm.num_samples == 12
 
@@ -157,10 +186,10 @@ def test_combined_example_config_round_trips() -> None:
 
 def test_config_rejects_invalid_subconfigs() -> None:
     base = dict(
-        data=DataSourceConfig(kind="csv", path=str(FIXTURE_CSV)),
+        data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE_CSV)),
         frequency="1min",
         walk_forward=WalkForwardConfig(h_days=10, t_days=2, retrain_every_days=2),
-        sha256=FIXTURE_SHA256,
+        sha256=SAMPLE_FIXTURE_SHA256,
     )
     with pytest.raises(TypeError, match="bucketed_transition"):
         SideInfoComparisonConfig(**base, bucketed_transition={"n_buckets": 3})  # type: ignore[arg-type]
@@ -168,6 +197,22 @@ def test_config_rejects_invalid_subconfigs() -> None:
         SideInfoComparisonConfig(**base, spline={"n_knots": 5})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="continuous_iohmm"):
         SideInfoComparisonConfig(**base, continuous_iohmm={"num_samples": 8})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="dmm"):
+        SideInfoComparisonConfig(**base, dmm={"num_epochs": 2})  # type: ignore[arg-type]
+
+
+def test_config_rejects_nonzero_dmm_side_info_dim() -> None:
+    # dmm.side_info_dim is derived per window from the side-info feature; a non-zero
+    # config value is vestigial and would vary the comparison_id without changing the
+    # trained model, so it is rejected.
+    base = dict(
+        data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE_CSV)),
+        frequency="1min",
+        walk_forward=WalkForwardConfig(h_days=10, t_days=2, retrain_every_days=2),
+        sha256=SAMPLE_FIXTURE_SHA256,
+    )
+    with pytest.raises(ValueError, match="side_info_dim"):
+        SideInfoComparisonConfig(**base, dmm=DMMConfig(side_info_dim=2))
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +245,42 @@ def test_summary_metrics_are_finite_or_null(comparison_artifacts) -> None:
                 assert value is None or np.isfinite(
                     value
                 ), f"{variant}.{mode}.{column} is neither finite nor null: {value!r}"
+
+
+def test_dmm_variant_yields_valid_result(comparison_artifacts) -> None:
+    result = comparison_artifacts.result.variants[DMM_VARIANT]
+
+    assert result.variant == DMM_VARIANT
+    assert isinstance(result.signal, pd.Series)
+    assert isinstance(result.pre_cost_returns, pd.Series)
+    assert isinstance(result.post_cost_returns, pd.Series)
+    assert isinstance(result.summary, pd.DataFrame)
+    assert result.windows
+    assert all(isinstance(window, DmmVariantWindow) for window in result.windows)
+    assert len(result.signal) > len(result.pre_cost_returns) >= 1
+    assert result.pre_cost_returns.index.equals(result.post_cost_returns.index)
+
+
+def test_dmm_window_records_persist_training_settings(comparison_artifacts) -> None:
+    cfg = comparison_artifacts.config
+    result = comparison_artifacts.result.variants[DMM_VARIANT]
+    first_window = result.windows[0]
+
+    assert isinstance(first_window, DmmVariantWindow)
+    assert first_window.feature_identity == "volatility_ratio"
+    assert first_window.side_info_dim == 1
+    assert first_window.num_epochs == cfg.dmm.num_epochs
+    assert first_window.mini_batch_size == cfg.dmm.mini_batch_size
+    assert first_window.learning_rate == cfg.dmm.learning_rate
+    assert first_window.beta1 == cfg.dmm.beta1
+    assert first_window.beta2 == cfg.dmm.beta2
+    assert first_window.clip_norm == cfg.dmm.clip_norm
+    assert first_window.lr_decay == cfg.dmm.lr_decay
+    assert first_window.weight_decay == cfg.dmm.weight_decay
+    assert first_window.min_annealing_factor == cfg.dmm.min_annealing_factor
+    assert first_window.annealing_epochs == cfg.dmm.annealing_epochs
+    assert first_window.seed == cfg.dmm.seed
+    assert np.isfinite(first_window.final_loss)
 
 
 def test_baseline_summary_matches_direct_walk_forward(comparison_artifacts) -> None:
@@ -246,6 +327,11 @@ def test_artifact_layout_is_written(comparison_artifacts) -> None:
             assert "converged" in first_record
             assert "rhat_max" in first_record
             assert "ess_bulk_min" in first_record
+        elif variant == DMM_VARIANT:
+            assert first_record["feature_identity"] == "volatility_ratio"
+            assert first_record["side_info_dim"] == 1
+            assert first_record["num_epochs"] == comparison_artifacts.config.dmm.num_epochs
+            assert "final_loss" in first_record
 
 
 @pytest.mark.parametrize(
@@ -299,7 +385,7 @@ def test_quantile_boundary_mode_logs_effective_mode(
 
     artifacts = run_side_info_comparison(cfg, runs_root=tmp_path)
 
-    _no_bucket_variants = {BASELINE_VARIANT, DEFAULT_HMM_VARIANT} | HMC_VARIANTS
+    _no_bucket_variants = {BASELINE_VARIANT, DEFAULT_HMM_VARIANT, DMM_VARIANT} | HMC_VARIANTS
     for variant in EXPECTED_VARIANTS:
         records = [
             json.loads(line)
@@ -453,6 +539,16 @@ def test_checkpointing_resumes_after_simulated_crash(
 
     monkeypatch.setattr(side_info_module, "_run_side_info_variant", spy_run_side_info_variant)
 
+    dmm_variant_calls = 0
+    real_run_dmm_variant = side_info_module._run_dmm_variant
+
+    def spy_run_dmm_variant(**kwargs):
+        nonlocal dmm_variant_calls
+        dmm_variant_calls += 1
+        return real_run_dmm_variant(**kwargs)
+
+    monkeypatch.setattr(side_info_module, "_run_dmm_variant", spy_run_dmm_variant)
+
     default_hmm_calls = 0
 
     def spy_run_default_hmm_variant(**kwargs):
@@ -468,6 +564,7 @@ def test_checkpointing_resumes_after_simulated_crash(
     assert (
         side_info_variant_calls == []
     ), f"no side-info variant should be recomputed on resume, got {side_info_variant_calls!r}"
+    assert dmm_variant_calls == 0, "dmm variant must be loaded from checkpoint"
     assert default_hmm_calls == 1, "default_hmm was the only missing stage and must be recomputed"
     assert not checkpoint_dir.exists()
     assert _summary_payload(reference.directory) == _summary_payload(resumed.directory)
@@ -577,6 +674,109 @@ def test_dynamic_filter_uses_supplied_training_posterior_seed() -> None:
     assert expected[0] > 0.0
 
 
+def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hft_hmm.experiments._data_loading import load_returns_from_source
+
+    cfg = _make_config()
+    returns = load_returns_from_source(cfg.data, frequency=cfg.frequency)
+    baseline = walk_forward(
+        returns,
+        cfg.walk_forward,
+        cost_bps_per_turnover=cfg.cost_bps_per_turnover,
+        signal_policy=cfg.signal_policy,
+        signal_threshold=cfg.signal_threshold,
+    )
+    baseline_window = baseline.windows[0]
+
+    bar_dates = returns.index.date
+    train_mask = (bar_dates >= baseline_window.train_start.date()) & (
+        bar_dates <= baseline_window.train_end.date()
+    )
+    train_slice = returns.loc[train_mask]
+    forecast_slice = returns.loc[baseline_window.forecast_start : baseline_window.forecast_end]
+    feature_index = pd.Index(train_slice.index.tolist() + forecast_slice.index.tolist())
+    feature_values = np.arange(feature_index.shape[0], dtype=float)
+    feature_values[0] = np.nan
+    feature = pd.Series(feature_values, index=feature_index, name="volatility_ratio")
+    feature_train = feature.reindex(train_slice.index)
+    feature_train_clean = feature_train.dropna()
+    feature_forecast = feature.reindex(forecast_slice.index)
+
+    train_mean = float(feature_train_clean.mean())
+    train_std = float(feature_train_clean.std(ddof=0))
+    expected_train_feature = (feature_train_clean - train_mean) / train_std
+    expected_forecast_feature = (feature_forecast - train_mean) / train_std
+
+    full_clean_feature = feature.dropna()
+    full_mean = float(full_clean_feature.mean())
+    full_std = float(full_clean_feature.std(ddof=0))
+    leaked_forecast_feature = (feature_forecast - full_mean) / full_std
+    assert not np.allclose(
+        expected_forecast_feature.to_numpy(),
+        leaked_forecast_feature.to_numpy(),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_build_feature(
+        variant: str,
+        series: pd.Series,
+        config: SideInfoComparisonConfig,
+    ) -> pd.Series:
+        del config
+        assert variant == VOLATILITY_RATIO_VARIANT
+        return feature.reindex(series.index)
+
+    def fake_fit_dmm(config, observations, side_info, seq_lengths):
+        captured["config"] = config
+        captured["observations"] = observations.detach().cpu().numpy()
+        captured["side_info"] = side_info.detach().cpu().numpy()
+        captured["seq_lengths"] = seq_lengths.detach().cpu().numpy()
+        return type(
+            "FakeDmmFitResult",
+            (),
+            {"model": object(), "loss_history": (1.0, 0.5)},
+        )()
+
+    def fake_expected_next_returns_from_dmm(model, returns_arg, side_info_arg):
+        del model
+        captured["forecast_returns"] = returns_arg.copy()
+        captured["forecast_side_info"] = side_info_arg.copy()
+        return pd.Series(0.0, index=returns_arg.index, name="expected_next_returns")
+
+    # _run_dmm_variant lazily imports fit_dmm/expected_next_returns_from_dmm from
+    # hft_hmm.models.dmm at call time (to keep torch optional), so patch the source
+    # module. _build_feature stays a module-level symbol in side_info_comparison.
+    monkeypatch.setattr(side_info_module, "_build_feature", fake_build_feature)
+    monkeypatch.setattr("hft_hmm.models.dmm.fit_dmm", fake_fit_dmm)
+    monkeypatch.setattr(
+        "hft_hmm.models.dmm.expected_next_returns_from_dmm",
+        fake_expected_next_returns_from_dmm,
+    )
+
+    result = side_info_module._run_dmm_variant(
+        returns=returns,
+        config=cfg,
+        baseline_windows=(baseline_window,),
+    )
+
+    assert result.variant == DMM_VARIANT
+    assert captured["config"].side_info_dim == 1
+    np.testing.assert_array_equal(captured["seq_lengths"], np.array([len(feature_train_clean)]))
+    np.testing.assert_allclose(
+        captured["observations"],
+        train_slice.loc[feature_train_clean.index].to_numpy(dtype=np.float32).reshape(1, -1, 1),
+    )
+    np.testing.assert_allclose(
+        captured["side_info"],
+        expected_train_feature.to_numpy(dtype=np.float32).reshape(1, -1, 1),
+    )
+    pd.testing.assert_series_equal(captured["forecast_returns"], forecast_slice)
+    pd.testing.assert_series_equal(captured["forecast_side_info"], expected_forecast_feature)
+
+
 # ---------------------------------------------------------------------------
 # CLI subprocess
 # ---------------------------------------------------------------------------
@@ -584,11 +784,13 @@ def test_dynamic_filter_uses_supplied_training_posterior_seed() -> None:
 
 def test_cli_runs_from_repo_root(tmp_path: Path) -> None:
     runs_root = tmp_path / "cli-runs"
+    config_path = tmp_path / "cli-side-info.yaml"
+    config_path.write_bytes(_make_config().to_yaml_bytes())
     completed = subprocess.run(
         [
             sys.executable,
             "scripts/run_side_info_comparison.py",
-            str(EXAMPLE_CONFIG.relative_to(REPO_ROOT)),
+            str(config_path),
             "--runs-root",
             str(runs_root),
             "--force",

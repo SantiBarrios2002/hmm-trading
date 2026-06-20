@@ -49,7 +49,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -117,6 +117,12 @@ from hft_hmm.strategy.signals import (
     _VALID_SIGNAL_POLICIES,
 )
 
+if TYPE_CHECKING:
+    # torch/pyro live behind the optional [dmm] extra; keep them out of the
+    # module import path so `import hft_hmm` stays torch-free. The DMM variant
+    # lazily imports them at call time.
+    from hft_hmm.models.dmm import DMMConfig
+
 __category__: Final[str] = EVALUATION_LAYER
 SIDE_INFO_COMPARISON_REFERENCE: Final[PaperReference] = reference(
     "§4", "side-information IOHMM comparison (Gate H)"
@@ -132,6 +138,7 @@ VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: Final[str] = "volatility_ratio_hmc_cont
 SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "seasonality_hmc_continuous"
 VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT: Final[str] = "vol_ratio_seasonality_hmc_continuous"
 DEFAULT_HMM_VARIANT: Final[str] = "default_hmm"
+DMM_VARIANT: Final[str] = "dmm"
 EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     BASELINE_VARIANT,
     VOLATILITY_RATIO_VARIANT,
@@ -139,6 +146,7 @@ EXPECTED_VARIANTS: Final[tuple[str, ...]] = (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
+    DMM_VARIANT,
     DEFAULT_HMM_VARIANT,
 )
 _SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
@@ -148,6 +156,8 @@ _SIDE_INFO_VARIANTS: Final[tuple[str, ...]] = (
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
     VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
 )
+_DMM_FEATURE_IDENTITY: Final[str] = "volatility_ratio"
+_MIN_STANDARDIZATION_STD: Final[float] = 1e-12
 _HMC_CONTINUOUS_VARIANTS: Final[tuple[str, ...]] = (
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
@@ -158,6 +168,13 @@ _HMC_CONTINUOUS_VARIANTS: Final[tuple[str, ...]] = (
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
+
+def _default_dmm_config() -> DMMConfig:
+    """Build the default DMMConfig, importing it lazily to keep torch optional."""
+    from hft_hmm.models.dmm import DMMConfig
+
+    return DMMConfig()
 
 
 @dataclass(frozen=True)
@@ -179,6 +196,7 @@ class SideInfoComparisonConfig:
     spline: SplinePredictorConfig = field(default_factory=SplinePredictorConfig)
     bucketed_transition: BucketedTransitionConfig = field(default_factory=BucketedTransitionConfig)
     continuous_iohmm: ContinuousIOHMMConfig = field(default_factory=ContinuousIOHMMConfig)
+    dmm: DMMConfig = field(default_factory=_default_dmm_config)
     vol_ratio: VolatilityRatioConfig = field(default_factory=VolatilityRatioConfig)
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
     cost_bps_per_turnover: float = 0.0
@@ -212,6 +230,15 @@ class SideInfoComparisonConfig:
             raise TypeError(
                 "continuous_iohmm must be a ContinuousIOHMMConfig, "
                 f"got {type(self.continuous_iohmm).__name__}."
+            )
+        from hft_hmm.models.dmm import DMMConfig
+
+        if not isinstance(self.dmm, DMMConfig):
+            raise TypeError(f"dmm must be a DMMConfig, got {type(self.dmm).__name__}.")
+        if self.dmm.side_info_dim != 0:
+            raise ValueError(
+                "dmm.side_info_dim is derived from the side-info feature at runtime "
+                "(the DMM variant overrides it per window); set it to 0 in the config."
             )
         if not isinstance(self.vol_ratio, VolatilityRatioConfig):
             raise TypeError(
@@ -288,6 +315,28 @@ class SideInfoComparisonConfig:
             },
             "cost_bps_per_turnover": float(self.cost_bps_per_turnover),
             "data": self.data.to_dict(),
+            "dmm": {
+                "annealing_epochs": int(self.dmm.annealing_epochs),
+                "beta1": float(self.dmm.beta1),
+                "beta2": float(self.dmm.beta2),
+                "clip_norm": float(self.dmm.clip_norm),
+                "emission_dim": int(self.dmm.emission_dim),
+                "learning_rate": float(self.dmm.learning_rate),
+                "lr_decay": float(self.dmm.lr_decay),
+                "min_annealing_factor": float(self.dmm.min_annealing_factor),
+                "min_scale": float(self.dmm.min_scale),
+                "mini_batch_size": int(self.dmm.mini_batch_size),
+                "num_epochs": int(self.dmm.num_epochs),
+                "num_layers": int(self.dmm.num_layers),
+                "obs_dim": int(self.dmm.obs_dim),
+                "rnn_dim": int(self.dmm.rnn_dim),
+                "rnn_dropout_rate": float(self.dmm.rnn_dropout_rate),
+                "seed": int(self.dmm.seed),
+                "side_info_dim": int(self.dmm.side_info_dim),
+                "transition_dim": int(self.dmm.transition_dim),
+                "weight_decay": float(self.dmm.weight_decay),
+                "z_dim": int(self.dmm.z_dim),
+            },
             "frequency": self.frequency,
             "notes": self.notes,
             "seasonality": {
@@ -374,6 +423,33 @@ class SideInfoComparisonConfig:
             rhat_threshold=float(ci_raw.get("rhat_threshold", 1.05)),
             ess_bulk_threshold=int(ci_raw.get("ess_bulk_threshold", 200)),
         )
+        from hft_hmm.models.dmm import DMMConfig
+
+        dmm_raw = raw.get("dmm", {})
+        if not isinstance(dmm_raw, Mapping):
+            raise ValueError(f"dmm must be a mapping; got {type(dmm_raw).__name__}.")
+        dmm = DMMConfig(
+            obs_dim=int(dmm_raw.get("obs_dim", 1)),
+            z_dim=int(dmm_raw.get("z_dim", 16)),
+            emission_dim=int(dmm_raw.get("emission_dim", 32)),
+            transition_dim=int(dmm_raw.get("transition_dim", 32)),
+            rnn_dim=int(dmm_raw.get("rnn_dim", 32)),
+            side_info_dim=int(dmm_raw.get("side_info_dim", 0)),
+            num_layers=int(dmm_raw.get("num_layers", 1)),
+            rnn_dropout_rate=float(dmm_raw.get("rnn_dropout_rate", 0.1)),
+            min_scale=float(dmm_raw.get("min_scale", 1e-4)),
+            num_epochs=int(dmm_raw.get("num_epochs", 150)),
+            mini_batch_size=int(dmm_raw.get("mini_batch_size", 20)),
+            learning_rate=float(dmm_raw.get("learning_rate", 3e-4)),
+            beta1=float(dmm_raw.get("beta1", 0.96)),
+            beta2=float(dmm_raw.get("beta2", 0.999)),
+            clip_norm=float(dmm_raw.get("clip_norm", 10.0)),
+            lr_decay=float(dmm_raw.get("lr_decay", 0.99996)),
+            weight_decay=float(dmm_raw.get("weight_decay", 2.0)),
+            min_annealing_factor=float(dmm_raw.get("min_annealing_factor", 0.2)),
+            annealing_epochs=int(dmm_raw.get("annealing_epochs", 1000)),
+            seed=int(dmm_raw.get("seed", 54)),
+        )
         vr_raw = raw.get("vol_ratio", {})
         vol_ratio_cfg = VolatilityRatioConfig(
             decay=float(vr_raw.get("decay", 0.79)),
@@ -393,6 +469,7 @@ class SideInfoComparisonConfig:
             spline=spline,
             bucketed_transition=bucketed,
             continuous_iohmm=continuous_iohmm,
+            dmm=dmm,
             vol_ratio=vol_ratio_cfg,
             seasonality=seasonality_cfg,
             cost_bps_per_turnover=float(raw.get("cost_bps_per_turnover", 0.0)),
@@ -602,12 +679,95 @@ class ContinuousSideInfoVariantWindow:
 
 
 @dataclass(frozen=True)
+class DmmVariantWindow:
+    """Per-window record for the DMM side-information benchmark."""
+
+    index: int
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+    forecast_start: pd.Timestamp
+    forecast_end: pd.Timestamp
+    chosen_k: int
+    n_train_obs: int
+    n_forecast_obs: int
+    feature_identity: str
+    side_info_dim: int
+    num_epochs: int
+    mini_batch_size: int
+    learning_rate: float
+    beta1: float
+    beta2: float
+    clip_norm: float
+    lr_decay: float
+    weight_decay: float
+    min_annealing_factor: float
+    annealing_epochs: int
+    seed: int
+    final_loss: float
+    summary: pd.DataFrame
+
+    def __post_init__(self) -> None:
+        if self.index < 0:
+            raise ValueError(f"index must be non-negative, got {self.index}.")
+        if self.chosen_k < 2:
+            raise ValueError(f"chosen_k must be >= 2, got {self.chosen_k}.")
+        if self.n_train_obs < 1:
+            raise ValueError(f"n_train_obs must be >= 1, got {self.n_train_obs}.")
+        if self.n_forecast_obs < 2:
+            raise ValueError(
+                f"n_forecast_obs must be >= 2 to align signals; got {self.n_forecast_obs}."
+            )
+        if self.train_end < self.train_start:
+            raise ValueError("train_end must not precede train_start.")
+        if self.forecast_end < self.forecast_start:
+            raise ValueError("forecast_end must not precede forecast_start.")
+        if self.forecast_start <= self.train_end:
+            raise ValueError(
+                "forecast_start must be strictly after train_end; "
+                f"got train_end={self.train_end} forecast_start={self.forecast_start}."
+            )
+        if not isinstance(self.feature_identity, str) or not self.feature_identity:
+            raise ValueError("feature_identity must be a non-empty string.")
+        if self.side_info_dim < 1:
+            raise ValueError(f"side_info_dim must be >= 1, got {self.side_info_dim}.")
+        if self.num_epochs < 1:
+            raise ValueError(f"num_epochs must be >= 1, got {self.num_epochs}.")
+        if self.mini_batch_size < 1:
+            raise ValueError(f"mini_batch_size must be >= 1, got {self.mini_batch_size}.")
+        if self.annealing_epochs < 0:
+            raise ValueError(f"annealing_epochs must be >= 0, got {self.annealing_epochs}.")
+        if self.seed < 0:
+            raise ValueError(f"seed must be >= 0, got {self.seed}.")
+        for field_name, value in (
+            ("learning_rate", self.learning_rate),
+            ("clip_norm", self.clip_norm),
+            ("lr_decay", self.lr_decay),
+            ("weight_decay", self.weight_decay),
+            ("min_annealing_factor", self.min_annealing_factor),
+            ("beta1", self.beta1),
+            ("beta2", self.beta2),
+            ("final_loss", self.final_loss),
+        ):
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise ValueError(f"{field_name} must be finite, got {numeric!r}.")
+        if not isinstance(self.summary, pd.DataFrame):
+            raise TypeError("summary must be a pd.DataFrame.")
+
+
+@dataclass(frozen=True)
 class SideInfoVariantResult:
     """Per-variant result of a side-information comparison."""
 
     variant: str
     chosen_k_per_window: tuple[int, ...]
-    windows: tuple[SideInfoVariantWindow | ContinuousSideInfoVariantWindow | WalkForwardWindow, ...]
+    windows: tuple[
+        SideInfoVariantWindow
+        | ContinuousSideInfoVariantWindow
+        | DmmVariantWindow
+        | WalkForwardWindow,
+        ...,
+    ]
     signal: pd.Series
     pre_cost_returns: pd.Series
     post_cost_returns: pd.Series
@@ -781,6 +941,16 @@ def run_side_info_comparison(
             baseline_windows=baseline_wf.windows,
         ),
     )
+    dmm_variant = _checkpointed_stage(
+        DMM_VARIANT,
+        checkpoint_path,
+        expected_type=SideInfoVariantResult,
+        factory=lambda: _run_dmm_variant(
+            returns=returns,
+            config=config,
+            baseline_windows=baseline_wf.windows,
+        ),
+    )
     default_hmm_variant = _checkpointed_stage(
         DEFAULT_HMM_VARIANT,
         checkpoint_path,
@@ -802,6 +972,7 @@ def run_side_info_comparison(
             VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: vol_hmc_variant,
             SEASONALITY_HMC_CONTINUOUS_VARIANT: seasonality_hmc_variant,
             VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT: combined_hmc_variant,
+            DMM_VARIANT: dmm_variant,
             DEFAULT_HMM_VARIANT: default_hmm_variant,
         },
     )
@@ -1319,6 +1490,189 @@ def _run_default_hmm_variant(
     )
 
 
+def _run_dmm_variant(
+    *,
+    returns: pd.Series,
+    config: SideInfoComparisonConfig,
+    baseline_windows: tuple[WalkForwardWindow, ...],
+) -> SideInfoVariantResult:
+    """Run the DMM benchmark on the same windows as the baseline."""
+    import torch
+
+    from hft_hmm.models.dmm import expected_next_returns_from_dmm, fit_dmm
+
+    if config.dmm.obs_dim != 1:
+        raise ValueError(f"config.dmm.obs_dim must be 1, got {config.dmm.obs_dim}.")
+
+    cost = config.cost_bps_per_turnover
+    bar_dates = returns.index.date
+
+    windows: list[DmmVariantWindow] = []
+    signal_parts: list[pd.Series] = []
+    pre_cost_parts: list[pd.Series] = []
+    post_cost_parts: list[pd.Series] = []
+    chosen_ks: list[int] = []
+    initial_position = 0
+    total_windows = len(baseline_windows)
+
+    for window_position, baseline_window in enumerate(baseline_windows, start=1):
+        window_start_time = time.monotonic()
+        train_mask = (bar_dates >= baseline_window.train_start.date()) & (
+            bar_dates <= baseline_window.train_end.date()
+        )
+        train_slice = returns.loc[train_mask]
+        effective_forecast = returns.loc[
+            baseline_window.forecast_start : baseline_window.forecast_end
+        ]
+        if effective_forecast.shape[0] < 2:
+            raise ValueError(
+                "each effective forecast window must contain at least 2 observations; "
+                f"window {baseline_window.index} has {effective_forecast.shape[0]}."
+            )
+
+        feature_full = _build_feature(
+            VOLATILITY_RATIO_VARIANT,
+            pd.concat([train_slice, effective_forecast]),
+            config,
+        )
+        feature_train = feature_full.reindex(train_slice.index)
+        feature_forecast = feature_full.reindex(effective_forecast.index)
+
+        forecast_has_nan = (
+            bool(feature_forecast.isna().any().any())
+            if isinstance(feature_forecast, pd.DataFrame)
+            else bool(feature_forecast.isna().any())
+        )
+        if forecast_has_nan:
+            raise ValueError(
+                f"forecast feature for variant {DMM_VARIANT!r} contains NaN in window "
+                f"{baseline_window.index}; increase h_days so the rolling window is "
+                "fully initialized before the forecast slice."
+            )
+
+        feature_train_clean = feature_train.dropna()
+        if feature_train_clean.shape[0] < 2:
+            raise ValueError(
+                f"variant {DMM_VARIANT!r} window {baseline_window.index} has fewer than 2 "
+                "finite training feature observations after dropping the NaN prefix."
+            )
+        train_returns_clean = train_slice.loc[feature_train_clean.index]
+        standardized_train_feature, standardized_forecast_feature = _standardize_feature_train_only(
+            feature_train_clean,
+            feature_forecast,
+        )
+
+        side_info_dim = _feature_side_info_dim(standardized_train_feature)
+        dmm_config = replace(config.dmm, side_info_dim=side_info_dim)
+        observations = torch.as_tensor(
+            train_returns_clean.to_numpy(dtype=np.float32).reshape(1, -1, 1),
+            dtype=torch.float32,
+        )
+        side_info = torch.as_tensor(
+            _feature_to_2d_numpy(standardized_train_feature).astype(np.float32, copy=False)[
+                None, :, :
+            ],
+            dtype=torch.float32,
+        )
+        seq_lengths = torch.tensor([train_returns_clean.shape[0]], dtype=torch.long)
+        fitted = fit_dmm(dmm_config, observations, side_info, seq_lengths)
+        expected_series = expected_next_returns_from_dmm(
+            fitted.model,
+            effective_forecast,
+            standardized_forecast_feature,
+        )
+
+        signal_scale: float | None = None
+        if config.signal_policy == "conviction_weighted":
+            train_expected = expected_next_returns_from_dmm(
+                fitted.model,
+                train_returns_clean,
+                standardized_train_feature,
+            )
+            signal_scale = conviction_scale_from_train_predictions(train_expected.to_numpy())
+
+        window_signal = build_signal(
+            expected_series,
+            policy=config.signal_policy,
+            threshold=config.signal_threshold,
+            initial_position=initial_position,
+            scale=signal_scale,
+        )
+        if config.signal_policy == "thresholded_hold":
+            initial_position = int(window_signal.iloc[-1])
+        window_pre_cost = align_signal_with_future_return(window_signal, effective_forecast)
+        window_post_cost = apply_turnover_cost(
+            window_pre_cost,
+            signal_turnover(window_signal),
+            cost_bps_per_turnover=cost,
+        )
+        window_summary = _summarize_return_modes(
+            window_pre_cost, window_post_cost, cost_bps_per_turnover=cost
+        )
+
+        signal_parts.append(window_signal)
+        pre_cost_parts.append(window_pre_cost)
+        post_cost_parts.append(window_post_cost)
+        chosen_ks.append(int(baseline_window.chosen_k))
+        windows.append(
+            DmmVariantWindow(
+                index=int(baseline_window.index),
+                train_start=train_slice.index.min(),
+                train_end=train_slice.index.max(),
+                forecast_start=effective_forecast.index.min(),
+                forecast_end=effective_forecast.index.max(),
+                chosen_k=int(baseline_window.chosen_k),
+                n_train_obs=int(train_slice.shape[0]),
+                n_forecast_obs=int(effective_forecast.shape[0]),
+                feature_identity=_DMM_FEATURE_IDENTITY,
+                side_info_dim=side_info_dim,
+                num_epochs=int(dmm_config.num_epochs),
+                mini_batch_size=int(dmm_config.mini_batch_size),
+                learning_rate=float(dmm_config.learning_rate),
+                beta1=float(dmm_config.beta1),
+                beta2=float(dmm_config.beta2),
+                clip_norm=float(dmm_config.clip_norm),
+                lr_decay=float(dmm_config.lr_decay),
+                weight_decay=float(dmm_config.weight_decay),
+                min_annealing_factor=float(dmm_config.min_annealing_factor),
+                annealing_epochs=int(dmm_config.annealing_epochs),
+                seed=int(dmm_config.seed),
+                final_loss=float(fitted.loss_history[-1]),
+                summary=window_summary,
+            )
+        )
+
+        elapsed = time.monotonic() - window_start_time
+        print(
+            f"[{DMM_VARIANT}] window {window_position}/{total_windows} "
+            f"index={int(baseline_window.index)} done in {elapsed:.1f}s "
+            f"final_loss={float(fitted.loss_history[-1]):.6f}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    combined_signal = pd.concat(signal_parts)
+    if config.signal_policy in _DISCRETE_SIGNAL_POLICIES:
+        combined_signal = combined_signal.astype(np.int8)
+    combined_signal.name = "signal"
+    pre_cost_returns = pd.concat(pre_cost_parts)
+    post_cost_returns = pd.concat(post_cost_parts)
+    summary = _summarize_return_modes(
+        pre_cost_returns, post_cost_returns, cost_bps_per_turnover=cost
+    )
+
+    return SideInfoVariantResult(
+        variant=DMM_VARIANT,
+        chosen_k_per_window=tuple(chosen_ks),
+        windows=tuple(windows),
+        signal=combined_signal,
+        pre_cost_returns=pre_cost_returns,
+        post_cost_returns=post_cost_returns,
+        summary=summary,
+        cost_bps_per_turnover=float(cost),
+    )
+
+
 def _bucket_boundaries_for_mode(
     *,
     spline_result: SplinePredictorResult,
@@ -1369,6 +1723,45 @@ def _build_feature(
             keys=["vol_ratio", "seasonality"],
         ).dropna()
     raise ValueError(f"unsupported variant {variant!r}.")
+
+
+def _standardize_feature_train_only(
+    train_feature: pd.Series | pd.DataFrame,
+    forecast_feature: pd.Series | pd.DataFrame,
+) -> tuple[pd.Series | pd.DataFrame, pd.Series | pd.DataFrame]:
+    """Z-score side information using train-slice moments only."""
+    if isinstance(train_feature, pd.DataFrame):
+        mean = train_feature.mean(axis=0)
+        std = train_feature.std(axis=0, ddof=0)
+        std = std.where(std > _MIN_STANDARDIZATION_STD, 1.0)
+        return (
+            (train_feature - mean) / std,
+            (forecast_feature - mean) / std,
+        )
+
+    mean = float(train_feature.mean())
+    std = float(train_feature.std(ddof=0))
+    if std <= _MIN_STANDARDIZATION_STD:
+        std = 1.0
+    return (
+        (train_feature - mean) / std,
+        (forecast_feature - mean) / std,
+    )
+
+
+def _feature_to_2d_numpy(feature: pd.Series | pd.DataFrame) -> np.ndarray:
+    values = np.asarray(feature.to_numpy(dtype=float), dtype=float)
+    if values.ndim == 1:
+        values = values[:, None]
+    if values.ndim != 2:
+        raise ValueError(f"feature must coerce to a 2-D array, got shape {values.shape}.")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("feature values must contain only finite numbers.")
+    return values
+
+
+def _feature_side_info_dim(feature: pd.Series | pd.DataFrame) -> int:
+    return int(_feature_to_2d_numpy(feature).shape[1])
 
 
 def _dynamic_forward_expected_returns(
@@ -1711,6 +2104,21 @@ def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
             record["ess_bulk_min"] = int(w.ess_bulk_min)
             record["posterior_mean_W"] = w.posterior_mean_W.tolist()
             record["posterior_mean_b"] = w.posterior_mean_b.tolist()
+        elif isinstance(w, DmmVariantWindow):
+            record["feature_identity"] = w.feature_identity
+            record["side_info_dim"] = int(w.side_info_dim)
+            record["num_epochs"] = int(w.num_epochs)
+            record["mini_batch_size"] = int(w.mini_batch_size)
+            record["learning_rate"] = _json_safe(w.learning_rate)
+            record["beta1"] = _json_safe(w.beta1)
+            record["beta2"] = _json_safe(w.beta2)
+            record["clip_norm"] = _json_safe(w.clip_norm)
+            record["lr_decay"] = _json_safe(w.lr_decay)
+            record["weight_decay"] = _json_safe(w.weight_decay)
+            record["min_annealing_factor"] = _json_safe(w.min_annealing_factor)
+            record["annealing_epochs"] = int(w.annealing_epochs)
+            record["seed"] = int(w.seed)
+            record["final_loss"] = _json_safe(w.final_loss)
         lines.append(json.dumps(record, sort_keys=True, allow_nan=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
