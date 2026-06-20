@@ -25,10 +25,12 @@ Variable-length mini-batches are represented as padded tensors plus
 ``seq_lengths``. The model and guide preserve the P0 spike's masking strategy so
 padded timesteps do not contribute to latent or observation log-probability.
 The ``fit_dmm()`` entry point seeds Python's ``random`` module, NumPy, Torch,
-and Pyro from ``DMMConfig.seed``. On CPU, the unit tests pin Torch to one
-thread and assert repeated SVI fits match within an absolute loss tolerance of
-``1e-6``; reproducibility is therefore documented as within-tolerance rather
-than bit-for-bit identical across all environments.
+and Pyro from ``DMMConfig.seed``. The reproducibility contract for the SVI path
+assumes a single CPU Torch thread: the tests pin ``torch.set_num_threads(1)``
+and assert repeated seeded fits match within ``1e-6`` absolute tolerance.
+Across other BLAS threading setups the same seed can still drift slightly, so
+the DMM is documented as reproducible within tolerance rather than bit-for-bit
+identical across all environments.
 
 References: Krishnan et al. (2017) §3-4
 """
@@ -77,6 +79,8 @@ DEFAULT_WEIGHT_DECAY: Final[float] = 2.0
 DEFAULT_MIN_ANNEALING_FACTOR: Final[float] = 0.2
 DEFAULT_ANNEALING_EPOCHS: Final[int] = 1000
 DEFAULT_SEED: Final[int] = 54
+SINGLE_THREAD_REPRO_TORCH_THREADS: Final[int] = 1
+SINGLE_THREAD_REPRO_ABS_TOLERANCE: Final[float] = 1e-6
 
 
 @dataclass(frozen=True)
@@ -89,10 +93,11 @@ class DMMConfig:
 
     Reproducibility note: :func:`fit_dmm` seeds Python's ``random`` module,
     NumPy, Torch, and Pyro from ``seed`` before constructing the model and SVI
-    objects. The unit tests pin Torch to one CPU thread and assert repeated loss
-    histories agree within ``1e-6`` absolute tolerance; callers should treat the
-    fit as reproducible within tolerance rather than exactly identical across
-    machines or BLAS threading setups.
+    objects. The documented guarantee assumes ``torch.set_num_threads(1)``:
+    repeated seeded fits should then agree within
+    ``SINGLE_THREAD_REPRO_ABS_TOLERANCE`` absolute tolerance. Callers should
+    still treat the fit as reproducible within tolerance rather than exactly
+    identical across machines or BLAS threading setups.
 
     References: Krishnan et al. (2017) §3-4
     """
@@ -861,21 +866,19 @@ def expected_next_returns_from_dmm(
 
     try:
         with torch.no_grad():
+            filtered_latent_means = _filtered_latent_mean_trajectory_tensor(
+                dmm,
+                observations=observations,
+                side_info=side_info_tensor,
+            )
             for t in range(n_obs):
-                prefix_length = t + 1
-                prefix_observations = observations[:, :prefix_length, :]
-                prefix_side_info = (
-                    side_info_tensor[:, :prefix_length, :] if side_info_tensor is not None else None
-                )
-                filtered_latent_mean = _filtered_latent_mean_for_prefix(
-                    dmm,
-                    prefix_observations=prefix_observations,
-                    prefix_side_info=prefix_side_info,
-                )
                 transition_side_info = (
                     side_info_tensor[:, t, :] if side_info_tensor is not None else None
                 )
-                next_latent_loc, _ = dmm.trans(filtered_latent_mean, transition_side_info)
+                next_latent_loc, _ = dmm.trans(
+                    filtered_latent_means[t, :].unsqueeze(0),
+                    transition_side_info,
+                )
                 emission_loc, _ = dmm.emitter(next_latent_loc)
                 expected[t] = float(emission_loc.squeeze().item())
     finally:
@@ -884,6 +887,68 @@ def expected_next_returns_from_dmm(
     if not np.all(np.isfinite(expected)):
         raise ValueError("DMM expected_next_returns must contain only finite values.")
     return pd.Series(expected, index=return_index, name="expected_next_returns")
+
+
+def filtered_latent_mean_trajectory_from_dmm(
+    fitted: DMM | DMMFitResult,
+    returns: pd.Series | np.ndarray,
+    side_info: pd.Series | pd.DataFrame | np.ndarray | None = None,
+) -> pd.DataFrame:
+    """Return the causal filtered latent-mean trajectory for a forecast window.
+
+    The DMM guide is a reverse-time smoother, so recovering a filtered
+    ``E[z_t | Δy_{1:t}]`` trajectory without look-ahead requires evaluating the
+    guide on each expanding prefix ``Δy_{1:t}`` separately. This helper reuses
+    the same prefix filter as :func:`expected_next_returns_from_dmm` and returns
+    a finite, index-aligned dataframe with one row per observed bar and one
+    column per latent dimension.
+
+    References: Krishnan et al. (2017) §3-4
+    """
+
+    dmm = _coerce_dmm_forecast_model(fitted)
+    if dmm.obs_dim != 1:
+        raise ValueError(
+            "filtered_latent_mean_trajectory_from_dmm currently supports only obs_dim=1 "
+            f"models, got obs_dim={dmm.obs_dim}."
+        )
+    return_values, return_index = _coerce_return_forecast_series(returns)
+    n_obs = return_values.shape[0]
+    parameter = next(dmm.parameters())
+    device = parameter.device
+    dtype = parameter.dtype
+
+    observations = torch.as_tensor(
+        return_values.reshape(1, n_obs, dmm.obs_dim),
+        device=device,
+        dtype=dtype,
+    )
+    side_info_tensor = _coerce_forecast_side_info(
+        side_info,
+        return_index=return_index,
+        n_obs=n_obs,
+        side_info_dim=dmm.side_info_dim,
+        device=device,
+        dtype=dtype,
+    )
+
+    was_training = dmm.training
+    dmm.eval()
+    try:
+        with torch.no_grad():
+            filtered_latent_means = _filtered_latent_mean_trajectory_tensor(
+                dmm,
+                observations=observations,
+                side_info=side_info_tensor,
+            )
+    finally:
+        dmm.train(was_training)
+
+    latent_values = filtered_latent_means.detach().cpu().numpy()
+    if not np.all(np.isfinite(latent_values)):
+        raise ValueError("DMM filtered latent trajectory must contain only finite values.")
+    columns = [f"latent_{latent_dim + 1}" for latent_dim in range(dmm.z_dim)]
+    return pd.DataFrame(latent_values, index=return_index, columns=columns)
 
 
 def _coerce_observations(observations: torch.Tensor, *, obs_dim: int) -> torch.Tensor:
@@ -1118,6 +1183,31 @@ def _filtered_latent_mean_for_prefix(
         z_loc, _ = dmm.combiner(z_prev, rnn_output_padded[:, step, :])
         z_prev = z_loc
     return z_prev
+
+
+def _filtered_latent_mean_trajectory_tensor(
+    dmm: DMM,
+    *,
+    observations: torch.Tensor,
+    side_info: torch.Tensor | None,
+) -> torch.Tensor:
+    _, time_steps, _ = observations.shape
+    latent_trajectory = torch.empty(
+        time_steps,
+        dmm.z_dim,
+        device=observations.device,
+        dtype=observations.dtype,
+    )
+    for step in range(time_steps):
+        prefix_length = step + 1
+        prefix_observations = observations[:, :prefix_length, :]
+        prefix_side_info = side_info[:, :prefix_length, :] if side_info is not None else None
+        latent_trajectory[step, :] = _filtered_latent_mean_for_prefix(
+            dmm,
+            prefix_observations=prefix_observations,
+            prefix_side_info=prefix_side_info,
+        ).squeeze(0)
+    return latent_trajectory
 
 
 def _validate_positive_int(value: int, name: str) -> None:

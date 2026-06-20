@@ -8,7 +8,10 @@ from hft_hmm.selection.model_selection import (
     compare_state_counts,
     count_gaussian_hmm_parameters,
 )
-from hft_hmm.selection.plots import plot_selection_curves
+from hft_hmm.selection.plots import (
+    plot_dmm_filtered_latent_trajectory,
+    plot_selection_curves,
+)
 
 __all__ = [
     "ModelSelectionResult",
@@ -17,5 +20,6 @@ __all__ = [
     "bic",
     "compare_state_counts",
     "count_gaussian_hmm_parameters",
+    "plot_dmm_filtered_latent_trajectory",
     "plot_selection_curves",
 ]

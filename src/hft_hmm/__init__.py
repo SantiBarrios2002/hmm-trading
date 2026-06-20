@@ -115,6 +115,7 @@ from hft_hmm.selection import (
     bic,
     compare_state_counts,
     count_gaussian_hmm_parameters,
+    plot_dmm_filtered_latent_trajectory,
     plot_selection_curves,
 )
 from hft_hmm.strategy import (
@@ -215,6 +216,7 @@ __all__ = [
     "load_yfinance_market_data",
     "max_drawdown",
     "module_category",
+    "plot_dmm_filtered_latent_trajectory",
     "plot_selection_curves",
     "reference",
     "resample_prices",

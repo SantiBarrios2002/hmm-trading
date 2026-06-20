@@ -18,6 +18,8 @@ import torch  # noqa: E402
 from hft_hmm.core import ENGINEERING_APPROXIMATION, module_category  # noqa: E402
 from hft_hmm.models.dmm import (  # noqa: E402
     DMM,
+    SINGLE_THREAD_REPRO_ABS_TOLERANCE,
+    SINGLE_THREAD_REPRO_TORCH_THREADS,
     Combiner,
     DMMConfig,
     DMMFitResult,
@@ -422,16 +424,20 @@ def test_fit_dmm_is_reproducible_within_tolerance_at_one_thread() -> None:
         annealing_epochs=3,
         seed=23,
     )
-    atol = 1e-6
     previous_threads = torch.get_num_threads()
     try:
-        torch.set_num_threads(1)
+        torch.set_num_threads(SINGLE_THREAD_REPRO_TORCH_THREADS)
         first = fit_dmm(config, observations, side_info, seq_lengths)
         second = fit_dmm(config, observations, side_info, seq_lengths)
     finally:
         torch.set_num_threads(previous_threads)
 
-    np.testing.assert_allclose(first.loss_history, second.loss_history, atol=atol, rtol=0.0)
+    np.testing.assert_allclose(
+        first.loss_history,
+        second.loss_history,
+        atol=SINGLE_THREAD_REPRO_ABS_TOLERANCE,
+        rtol=0.0,
+    )
 
 
 def test_expected_next_returns_from_dmm_returns_index_aligned_series(
