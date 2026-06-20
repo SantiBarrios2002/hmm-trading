@@ -511,9 +511,7 @@ def test_cv_selection_diagnostics_are_written_to_summary_and_log(tmp_path: Path)
 
     assert payload["chosen_k_per_window"] == [2]
     assert payload["bic_chosen_k_per_window"] == [3]
-    assert payload["cv_mean_heldout_log_likelihood_by_k_per_window"] == [
-        {"2": -0.5, "3": -0.75}
-    ]
+    assert payload["cv_mean_heldout_log_likelihood_by_k_per_window"] == [{"2": -0.5, "3": -0.75}]
     assert first_record["chosen_k"] == 2
     assert first_record["bic_chosen_k"] == 3
     assert first_record["cv_mean_heldout_log_likelihood_by_k"] == {"2": -0.5, "3": -0.75}

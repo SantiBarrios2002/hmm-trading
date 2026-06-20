@@ -887,9 +887,7 @@ class SideInfoVariantResult:
                         f"got {type(bic_k).__name__}."
                     )
                 if bic_k < 2:
-                    raise ValueError(
-                        f"bic_chosen_k_per_window entries must be >= 2, got {bic_k}."
-                    )
+                    raise ValueError(f"bic_chosen_k_per_window entries must be >= 2, got {bic_k}.")
             normalized_scores_by_window: list[tuple[tuple[int, float], ...]] = []
             for scores in self.cv_scores_by_k_per_window:
                 if not scores:
@@ -1250,9 +1248,7 @@ def _selection_diagnostics_from_windows(
         if not window.cv_scores_by_k:
             raise ValueError("walk-forward window has BIC diagnostic but no CV scores.")
         bic_chosen_ks.append(int(window.bic_chosen_k))
-        cv_scores_by_k.append(
-            tuple((int(k), float(score)) for k, score in window.cv_scores_by_k)
-        )
+        cv_scores_by_k.append(tuple((int(k), float(score)) for k, score in window.cv_scores_by_k))
 
     if not bic_chosen_ks:
         return (), ()
@@ -2283,9 +2279,7 @@ def _variant_payload(
         },
     }
     if result.bic_chosen_k_per_window:
-        payload["bic_chosen_k_per_window"] = [
-            int(k) for k in result.bic_chosen_k_per_window
-        ]
+        payload["bic_chosen_k_per_window"] = [int(k) for k in result.bic_chosen_k_per_window]
         payload["cv_mean_heldout_log_likelihood_by_k_per_window"] = [
             _cv_scores_payload(scores) for scores in result.cv_scores_by_k_per_window
         ]

@@ -43,9 +43,7 @@ from hft_hmm.models.gaussian_hmm import (
 )
 
 __category__: Final[str] = ENGINEERING_APPROXIMATION
-CROSS_VALIDATION_REFERENCE: Final[PaperReference] = reference(
-    "§4", "cross-validation K selection"
-)
+CROSS_VALIDATION_REFERENCE: Final[PaperReference] = reference("§4", "cross-validation K selection")
 _SPLIT_POLICY: Final[str] = "expanding_forward_chaining"
 
 
@@ -76,9 +74,7 @@ class CrossValidationFoldScore:
         if self.train_end_index <= self.train_start_index:
             raise ValueError("train_end_index must be greater than train_start_index.")
         if self.heldout_start_index != self.train_end_index:
-            raise ValueError(
-                "heldout_start_index must equal train_end_index for forward chaining."
-            )
+            raise ValueError("heldout_start_index must equal train_end_index for forward chaining.")
         if self.heldout_end_index <= self.heldout_start_index:
             raise ValueError("heldout_end_index must be greater than heldout_start_index.")
         if not np.isfinite(self.heldout_log_likelihood):
@@ -111,9 +107,7 @@ class CrossValidationRow:
             raise ValueError("mean_heldout_log_likelihood must be finite.")
         expected = float(np.mean([score.per_bar_log_likelihood for score in self.fold_scores]))
         if not np.isclose(self.mean_heldout_log_likelihood, expected):
-            raise ValueError(
-                "mean_heldout_log_likelihood must equal the mean fold per-bar score."
-            )
+            raise ValueError("mean_heldout_log_likelihood must equal the mean fold per-bar score.")
 
 
 @dataclass(frozen=True)
@@ -314,8 +308,7 @@ def _validate_fit_hyperparameters(
         raise ValueError(f"tol must be a finite strictly positive float, got {tol!r}.")
     if not np.isfinite(min_variance) or min_variance <= 0.0:
         raise ValueError(
-            "min_variance must be a finite strictly positive float, "
-            f"got {min_variance!r}."
+            "min_variance must be a finite strictly positive float, " f"got {min_variance!r}."
         )
     if variance_floor_policy not in _VARIANCE_FLOOR_POLICIES:
         raise ValueError(

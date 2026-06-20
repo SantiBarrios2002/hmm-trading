@@ -562,8 +562,7 @@ def _select_k_with_diagnostics(
             chosen_k=int(cv_selection.chosen_k),
             bic_chosen_k=int(bic_selection.best_by_bic),
             cv_scores_by_k=tuple(
-                (int(row.k), float(row.mean_heldout_log_likelihood))
-                for row in cv_selection.rows
+                (int(row.k), float(row.mean_heldout_log_likelihood)) for row in cv_selection.rows
             ),
         )
 
