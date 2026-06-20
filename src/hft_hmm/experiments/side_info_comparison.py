@@ -214,6 +214,7 @@ class SideInfoComparisonConfig:
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
     train_frequency: str | None = None
     eval_frequency: str | None = None
+    variants: tuple[str, ...] | None = None
     cost_bps_per_turnover: float = 0.0
     signal_policy: SignalPolicy = "sign"
     signal_threshold: float = 0.0
@@ -235,6 +236,33 @@ class SideInfoComparisonConfig:
                 raise ValueError(
                     f"{field_name} must be one of {_VALID_FREQUENCIES} or None, got {value!r}."
                 )
+        if self.variants is not None:
+            if isinstance(self.variants, str) or not isinstance(self.variants, (list, tuple)):
+                raise TypeError(
+                    "variants must be a list/tuple of variant names or None, "
+                    f"got {type(self.variants).__name__}."
+                )
+            normalized_variants = tuple(str(v) for v in self.variants)
+            if not normalized_variants:
+                raise ValueError(
+                    "variants must be non-empty when set (use None to run all variants)."
+                )
+            invalid_variants = [v for v in normalized_variants if v not in EXPECTED_VARIANTS]
+            if invalid_variants:
+                raise ValueError(
+                    f"variants entries must be in {EXPECTED_VARIANTS}, "
+                    f"got invalid {invalid_variants!r}."
+                )
+            if len(set(normalized_variants)) != len(normalized_variants):
+                raise ValueError(
+                    f"variants must not contain duplicates, got {normalized_variants!r}."
+                )
+            if BASELINE_VARIANT not in normalized_variants:
+                raise ValueError(
+                    f"variants must include {BASELINE_VARIANT!r}: the baseline anchors the "
+                    "comparison and supplies the walk-forward windows the variants align to."
+                )
+            object.__setattr__(self, "variants", normalized_variants)
         if not isinstance(self.walk_forward, WalkForwardConfig):
             raise TypeError(
                 "walk_forward must be a WalkForwardConfig, "
@@ -352,7 +380,7 @@ class SideInfoComparisonConfig:
             walk_forward["k_selection"] = wf.k_selection
             walk_forward["cv_folds"] = int(wf.cv_folds)
 
-        return {
+        payload: dict[str, Any] = {
             "bucketed_transition": {
                 "boundary_mode": self.bucketed_transition.boundary_mode,
                 "grid_size": int(self.bucketed_transition.grid_size),
@@ -418,6 +446,9 @@ class SideInfoComparisonConfig:
             "walk_forward": walk_forward,
             "train_frequency": self.train_frequency,
         }
+        if self.variants is not None:
+            payload["variants"] = list(self.variants)
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> SideInfoComparisonConfig:
@@ -523,6 +554,7 @@ class SideInfoComparisonConfig:
             seasonality=seasonality_cfg,
             train_frequency=raw.get("train_frequency"),
             eval_frequency=raw.get("eval_frequency"),
+            variants=(tuple(raw["variants"]) if raw.get("variants") is not None else None),
             cost_bps_per_turnover=float(raw.get("cost_bps_per_turnover", 0.0)),
             signal_policy=raw.get("signal_policy", "sign"),
             signal_threshold=float(raw.get("signal_threshold", 0.0)),
@@ -930,9 +962,18 @@ class SideInfoComparisonResult:
     variants: dict[str, SideInfoVariantResult]
 
     def __post_init__(self) -> None:
-        missing = [v for v in EXPECTED_VARIANTS if v not in self.variants]
-        if missing:
-            raise ValueError(f"variants is missing {missing!r}; got {list(self.variants)!r}.")
+        if not self.variants:
+            raise ValueError("variants must be non-empty.")
+        unknown = [v for v in self.variants if v not in EXPECTED_VARIANTS]
+        if unknown:
+            raise ValueError(
+                f"variants contains unknown entries {unknown!r}; "
+                f"must be a subset of {EXPECTED_VARIANTS}."
+            )
+        if BASELINE_VARIANT not in self.variants:
+            raise ValueError(
+                f"variants must include {BASELINE_VARIANT!r}; got {list(self.variants)!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -1010,83 +1051,82 @@ def run_side_info_comparison(
             signal_threshold=config.signal_threshold,
         ),
     )
-    baseline_variant = _checkpointed_stage(
-        BASELINE_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _build_baseline_variant(baseline_wf, config.cost_bps_per_turnover),
+    requested_variants = (
+        set(config.variants) if config.variants is not None else set(EXPECTED_VARIANTS)
     )
-    vol_variant = _checkpointed_stage(
+
+    def _variant_stage(
+        name: str, factory: Callable[[], SideInfoVariantResult]
+    ) -> SideInfoVariantResult | None:
+        # Skip variants not requested (subset runs); baseline_wf above always
+        # runs because every variant aligns to its walk-forward windows.
+        if name not in requested_variants:
+            return None
+        return _checkpointed_stage(
+            name, checkpoint_path, expected_type=SideInfoVariantResult, factory=factory
+        )
+
+    baseline_variant = _variant_stage(
+        BASELINE_VARIANT,
+        lambda: _build_baseline_variant(baseline_wf, config.cost_bps_per_turnover),
+    )
+    vol_variant = _variant_stage(
         VOLATILITY_RATIO_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_side_info_variant(
+        lambda: _run_side_info_variant(
             VOLATILITY_RATIO_VARIANT,
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    seasonality_variant = _checkpointed_stage(
+    seasonality_variant = _variant_stage(
         SEASONALITY_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_side_info_variant(
+        lambda: _run_side_info_variant(
             SEASONALITY_VARIANT,
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    vol_hmc_variant = _checkpointed_stage(
+    vol_hmc_variant = _variant_stage(
         VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_side_info_variant(
+        lambda: _run_side_info_variant(
             VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    seasonality_hmc_variant = _checkpointed_stage(
+    seasonality_hmc_variant = _variant_stage(
         SEASONALITY_HMC_CONTINUOUS_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_side_info_variant(
+        lambda: _run_side_info_variant(
             SEASONALITY_HMC_CONTINUOUS_VARIANT,
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    combined_hmc_variant = _checkpointed_stage(
+    combined_hmc_variant = _variant_stage(
         VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_side_info_variant(
+        lambda: _run_side_info_variant(
             VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT,
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    dmm_variant = _checkpointed_stage(
+    dmm_variant = _variant_stage(
         DMM_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_dmm_variant(
+        lambda: _run_dmm_variant(
             returns=returns,
             train_returns=dmm_train_returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
     )
-    default_hmm_variant = _checkpointed_stage(
+    default_hmm_variant = _variant_stage(
         DEFAULT_HMM_VARIANT,
-        checkpoint_path,
-        expected_type=SideInfoVariantResult,
-        factory=lambda: _run_default_hmm_variant(
+        lambda: _run_default_hmm_variant(
             returns=returns,
             config=config,
             baseline_windows=baseline_wf.windows,
@@ -1097,14 +1137,18 @@ def run_side_info_comparison(
         config=config,
         comparison_id=cmp_id,
         variants={
-            BASELINE_VARIANT: baseline_variant,
-            VOLATILITY_RATIO_VARIANT: vol_variant,
-            SEASONALITY_VARIANT: seasonality_variant,
-            VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT: vol_hmc_variant,
-            SEASONALITY_HMC_CONTINUOUS_VARIANT: seasonality_hmc_variant,
-            VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT: combined_hmc_variant,
-            DMM_VARIANT: dmm_variant,
-            DEFAULT_HMM_VARIANT: default_hmm_variant,
+            name: variant
+            for name, variant in (
+                (BASELINE_VARIANT, baseline_variant),
+                (VOLATILITY_RATIO_VARIANT, vol_variant),
+                (SEASONALITY_VARIANT, seasonality_variant),
+                (VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT, vol_hmc_variant),
+                (SEASONALITY_HMC_CONTINUOUS_VARIANT, seasonality_hmc_variant),
+                (VOL_RATIO_SEASONALITY_HMC_CONTINUOUS_VARIANT, combined_hmc_variant),
+                (DMM_VARIANT, dmm_variant),
+                (DEFAULT_HMM_VARIANT, default_hmm_variant),
+            )
+            if variant is not None
         },
     )
 
@@ -2233,6 +2277,7 @@ def _write_summary(
         "variants": {
             name: _variant_payload(name, cmp_id, result.variants[name])
             for name in EXPECTED_VARIANTS
+            if name in result.variants
         },
     }
     path.write_text(
