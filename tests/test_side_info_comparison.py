@@ -56,6 +56,7 @@ EXAMPLE_HMC_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_com
 EXAMPLE_COMBINED_CONFIG = (
     REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_combined.yaml"
 )
+EXAMPLE_DMM_CONFIG = REPO_ROOT / "configs" / "example_es_databento_side_info_comparison_dmm.yaml"
 HMC_VARIANTS = {
     VOLATILITY_RATIO_HMC_CONTINUOUS_VARIANT,
     SEASONALITY_HMC_CONTINUOUS_VARIANT,
@@ -67,10 +68,16 @@ BUCKETED_VARIANTS = {
 }
 
 
-def _make_config(*, fixture_path: str = str(SAMPLE_FIXTURE_CSV)) -> SideInfoComparisonConfig:
+def _make_config(
+    *,
+    fixture_path: str = str(SAMPLE_FIXTURE_CSV),
+    frequency: str = "5min",
+    train_frequency: str | None = None,
+    eval_frequency: str | None = None,
+) -> SideInfoComparisonConfig:
     return SideInfoComparisonConfig(
         data=DataSourceConfig(kind="csv", path=fixture_path),
-        frequency="5min",
+        frequency=frequency,
         walk_forward=WalkForwardConfig(
             h_days=3,
             t_days=1,
@@ -113,6 +120,8 @@ def _make_config(*, fixture_path: str = str(SAMPLE_FIXTURE_CSV)) -> SideInfoComp
         ),
         vol_ratio=VolatilityRatioConfig(fast_window=50, slow_window=100),
         seasonality=SeasonalityConfig(bucket_minutes=1, exchange_tz="America/Chicago"),
+        train_frequency=train_frequency,
+        eval_frequency=eval_frequency,
         cost_bps_per_turnover=1.0,
         notes="test",
         sha256=SAMPLE_FIXTURE_SHA256,
@@ -134,12 +143,16 @@ def test_side_info_comparison_module_is_evaluation_layer() -> None:
 
 
 def test_config_yaml_round_trip_and_deterministic_id(tmp_path: Path) -> None:
-    cfg = _make_config()
+    cfg = _make_config(frequency="5min", train_frequency="5min", eval_frequency="1min")
     yaml_path = tmp_path / "comparison.yaml"
     yaml_path.write_bytes(cfg.to_yaml_bytes())
     loaded = SideInfoComparisonConfig.from_yaml(yaml_path)
 
     assert loaded.frequency == cfg.frequency
+    assert loaded.train_frequency == cfg.train_frequency
+    assert loaded.eval_frequency == cfg.eval_frequency
+    assert loaded.effective_train_frequency == "5min"
+    assert loaded.effective_eval_frequency == "1min"
     assert loaded.walk_forward.h_days == cfg.walk_forward.h_days
     assert loaded.bucketed_transition.n_buckets == cfg.bucketed_transition.n_buckets
     assert loaded.bucketed_transition.boundary_mode == cfg.bucketed_transition.boundary_mode
@@ -184,6 +197,19 @@ def test_combined_example_config_round_trips() -> None:
     assert SideInfoComparisonConfig.from_dict(raw) == cfg
 
 
+def test_dmm_example_config_round_trips() -> None:
+    cfg = SideInfoComparisonConfig.from_yaml(EXAMPLE_DMM_CONFIG)
+    raw = cfg.to_dict()
+
+    assert cfg.frequency == "1min"
+    assert cfg.eval_frequency == "1min"
+    assert cfg.train_frequency == "5min"
+    assert cfg.effective_eval_frequency == "1min"
+    assert cfg.effective_train_frequency == "5min"
+    assert cfg.dmm.num_epochs == 150
+    assert SideInfoComparisonConfig.from_dict(raw) == cfg
+
+
 def test_config_rejects_invalid_subconfigs() -> None:
     base = dict(
         data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE_CSV)),
@@ -215,6 +241,11 @@ def test_config_rejects_nonzero_dmm_side_info_dim() -> None:
         SideInfoComparisonConfig(**base, dmm=DMMConfig(side_info_dim=2))
 
 
+def test_config_rejects_train_frequency_finer_than_eval_frequency() -> None:
+    with pytest.raises(ValueError, match="train_frequency must be the same as or coarser"):
+        _make_config(frequency="5min", train_frequency="1min", eval_frequency="5min")
+
+
 # ---------------------------------------------------------------------------
 # Runner integration
 # ---------------------------------------------------------------------------
@@ -224,6 +255,15 @@ def test_config_rejects_nonzero_dmm_side_info_dim() -> None:
 def comparison_artifacts(tmp_path_factory):
     cfg = _make_config()
     return run_side_info_comparison(cfg, runs_root=tmp_path_factory.mktemp("side-info-runs"))
+
+
+@pytest.fixture(scope="module")
+def freq_split_comparison_artifacts(tmp_path_factory):
+    cfg = _make_config(frequency="1min", train_frequency="5min", eval_frequency="1min")
+    return run_side_info_comparison(
+        cfg,
+        runs_root=tmp_path_factory.mktemp("side-info-freq-split-runs"),
+    )
 
 
 def test_runner_produces_all_expected_variants(comparison_artifacts) -> None:
@@ -283,6 +323,25 @@ def test_dmm_window_records_persist_training_settings(comparison_artifacts) -> N
     assert np.isfinite(first_window.final_loss)
 
 
+def test_dmm_freq_split_run_records_effective_frequencies(freq_split_comparison_artifacts) -> None:
+    result = freq_split_comparison_artifacts.result.variants[DMM_VARIANT]
+    summary = json.loads((freq_split_comparison_artifacts.directory / "summary.json").read_text())
+
+    assert result.windows
+    assert all(isinstance(window, DmmVariantWindow) for window in result.windows)
+    assert {window.train_frequency for window in result.windows} == {"5min"}
+    assert {window.eval_frequency for window in result.windows} == {"1min"}
+    assert summary["frequency"] == "1min"
+
+    first_record = json.loads(
+        (freq_split_comparison_artifacts.directory / f"{DMM_VARIANT}.log.jsonl")
+        .read_text()
+        .splitlines()[0]
+    )
+    assert first_record["train_frequency"] == "5min"
+    assert first_record["eval_frequency"] == "1min"
+
+
 def test_baseline_summary_matches_direct_walk_forward(comparison_artifacts) -> None:
     cfg = comparison_artifacts.config
     from hft_hmm.experiments._data_loading import load_returns_from_source
@@ -328,6 +387,14 @@ def test_artifact_layout_is_written(comparison_artifacts) -> None:
             assert "rhat_max" in first_record
             assert "ess_bulk_min" in first_record
         elif variant == DMM_VARIANT:
+            assert (
+                first_record["train_frequency"]
+                == comparison_artifacts.config.effective_train_frequency
+            )
+            assert (
+                first_record["eval_frequency"]
+                == comparison_artifacts.config.effective_eval_frequency
+            )
             assert first_record["feature_identity"] == "volatility_ratio"
             assert first_record["side_info_dim"] == 1
             assert first_record["num_epochs"] == comparison_artifacts.config.dmm.num_epochs
@@ -674,13 +741,14 @@ def test_dynamic_filter_uses_supplied_training_posterior_seed() -> None:
     assert expected[0] > 0.0
 
 
-def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
+def test_dmm_variant_uses_train_frequency_slice_and_eval_frequency_standardization_without_leakage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hft_hmm.experiments._data_loading import load_returns_from_source
 
-    cfg = _make_config()
-    returns = load_returns_from_source(cfg.data, frequency=cfg.frequency)
+    cfg = _make_config(frequency="1min", train_frequency="5min", eval_frequency="1min")
+    returns = load_returns_from_source(cfg.data, frequency=cfg.effective_eval_frequency)
+    train_returns = load_returns_from_source(cfg.data, frequency=cfg.effective_train_frequency)
     baseline = walk_forward(
         returns,
         cfg.walk_forward,
@@ -690,26 +758,37 @@ def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
     )
     baseline_window = baseline.windows[0]
 
-    bar_dates = returns.index.date
-    train_mask = (bar_dates >= baseline_window.train_start.date()) & (
-        bar_dates <= baseline_window.train_end.date()
-    )
-    train_slice = returns.loc[train_mask]
+    train_slice = returns.loc[baseline_window.train_start : baseline_window.train_end]
     forecast_slice = returns.loc[baseline_window.forecast_start : baseline_window.forecast_end]
-    feature_index = pd.Index(train_slice.index.tolist() + forecast_slice.index.tolist())
-    feature_values = np.arange(feature_index.shape[0], dtype=float)
-    feature_values[0] = np.nan
-    feature = pd.Series(feature_values, index=feature_index, name="volatility_ratio")
-    feature_train = feature.reindex(train_slice.index)
+    train_fit_slice = train_returns.loc[baseline_window.train_start : baseline_window.train_end]
+    assert train_fit_slice.index.max() <= baseline_window.train_end
+    assert train_fit_slice.index.max() < baseline_window.forecast_start
+
+    train_feature_values = np.arange(train_fit_slice.shape[0], dtype=float)
+    train_feature_values[0] = np.nan
+    train_feature = pd.Series(
+        train_feature_values,
+        index=train_fit_slice.index,
+        name="volatility_ratio",
+    )
+    train_feature_clean = train_feature.dropna()
+    expected_train_mean = float(train_feature_clean.mean())
+    expected_train_std = float(train_feature_clean.std(ddof=0))
+    expected_train_feature = (train_feature_clean - expected_train_mean) / expected_train_std
+
+    eval_feature_index = pd.Index(train_slice.index.tolist() + forecast_slice.index.tolist())
+    eval_feature_values = np.arange(eval_feature_index.shape[0], dtype=float)
+    eval_feature_values[0] = np.nan
+    eval_feature = pd.Series(eval_feature_values, index=eval_feature_index, name="volatility_ratio")
+    feature_train = eval_feature.reindex(train_slice.index)
     feature_train_clean = feature_train.dropna()
-    feature_forecast = feature.reindex(forecast_slice.index)
+    feature_forecast = eval_feature.reindex(forecast_slice.index)
 
-    train_mean = float(feature_train_clean.mean())
-    train_std = float(feature_train_clean.std(ddof=0))
-    expected_train_feature = (feature_train_clean - train_mean) / train_std
-    expected_forecast_feature = (feature_forecast - train_mean) / train_std
+    eval_train_mean = float(feature_train_clean.mean())
+    eval_train_std = float(feature_train_clean.std(ddof=0))
+    expected_forecast_feature = (feature_forecast - eval_train_mean) / eval_train_std
 
-    full_clean_feature = feature.dropna()
+    full_clean_feature = eval_feature.dropna()
     full_mean = float(full_clean_feature.mean())
     full_std = float(full_clean_feature.std(ddof=0))
     leaked_forecast_feature = (feature_forecast - full_mean) / full_std
@@ -727,7 +806,11 @@ def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
     ) -> pd.Series:
         del config
         assert variant == VOLATILITY_RATIO_VARIANT
-        return feature.reindex(series.index)
+        if series.index.equals(train_fit_slice.index):
+            return train_feature
+        if series.index.equals(eval_feature_index):
+            return eval_feature
+        raise AssertionError(f"unexpected feature series index for DMM test: {series.index!r}")
 
     def fake_fit_dmm(config, observations, side_info, seq_lengths):
         captured["config"] = config
@@ -758,16 +841,20 @@ def test_dmm_variant_standardizes_forecast_with_train_slice_stats_only(
 
     result = side_info_module._run_dmm_variant(
         returns=returns,
+        train_returns=train_returns,
         config=cfg,
         baseline_windows=(baseline_window,),
     )
 
     assert result.variant == DMM_VARIANT
+    assert isinstance(result.windows[0], DmmVariantWindow)
+    assert result.windows[0].train_frequency == "5min"
+    assert result.windows[0].eval_frequency == "1min"
     assert captured["config"].side_info_dim == 1
-    np.testing.assert_array_equal(captured["seq_lengths"], np.array([len(feature_train_clean)]))
+    np.testing.assert_array_equal(captured["seq_lengths"], np.array([len(train_feature_clean)]))
     np.testing.assert_allclose(
         captured["observations"],
-        train_slice.loc[feature_train_clean.index].to_numpy(dtype=np.float32).reshape(1, -1, 1),
+        train_fit_slice.loc[train_feature_clean.index].to_numpy(dtype=np.float32).reshape(1, -1, 1),
     )
     np.testing.assert_allclose(
         captured["side_info"],

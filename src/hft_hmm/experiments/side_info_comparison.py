@@ -19,6 +19,12 @@ variants are directly comparable on pre-cost signal quality:
 5. ``vol_ratio_seasonality_hmc_continuous`` — Gate Q combined-predictor
    continuous-parametric IOHMM using volatility-ratio and intraday-seasonality
    side information jointly.
+6. ``dmm`` — Deep Markov Model benchmark. When ``train_frequency`` is coarser
+   than ``eval_frequency`` the DMM is fit on the coarser return series but
+   still produces 1-step forecasts on the finer evaluation series. That
+   cross-frequency forecast path is a deliberate engineering approximation so
+   Gate L can compare 5-minute training against 1-minute evaluation inside the
+   existing walk-forward harness.
 
 The IOHMM-style conditioning is the engineering approximation from
 ``hft_hmm.models.iohmm_approx``: a bucket index is derived from the
@@ -129,6 +135,9 @@ SIDE_INFO_COMPARISON_REFERENCE: Final[PaperReference] = reference(
 )
 
 _VALID_FREQUENCIES: Final[tuple[str, ...]] = ("1min", "5min", "1D")
+_FREQUENCY_ORDER: Final[dict[str, int]] = {
+    frequency: index for index, frequency in enumerate(_VALID_FREQUENCIES)
+}
 _SHA256_HEX_LENGTH: Final[int] = 64
 
 BASELINE_VARIANT: Final[str] = "baseline"
@@ -185,7 +194,11 @@ class SideInfoComparisonConfig:
     by the baseline path so the baseline summary is bit-for-bit identical to a
     direct ``walk_forward`` invocation. ``spline``, ``bucketed_transition``,
     ``vol_ratio``, and ``seasonality`` parameterise the side-information
-    variants only — the baseline ignores them.
+    variants only — the baseline ignores them. ``eval_frequency`` overrides the
+    legacy top-level ``frequency`` for the comparison-wide load/eval cadence,
+    while ``train_frequency`` can coarsen the DMM fit cadence only. A coarser
+    DMM train frequency with a finer eval frequency is a deliberate Gate L
+    approximation documented in the module docstring.
 
     References: §4 side-information IOHMM comparison (evaluation layer)
     """
@@ -199,6 +212,8 @@ class SideInfoComparisonConfig:
     dmm: DMMConfig = field(default_factory=_default_dmm_config)
     vol_ratio: VolatilityRatioConfig = field(default_factory=VolatilityRatioConfig)
     seasonality: SeasonalityConfig = field(default_factory=SeasonalityConfig)
+    train_frequency: str | None = None
+    eval_frequency: str | None = None
     cost_bps_per_turnover: float = 0.0
     signal_policy: SignalPolicy = "sign"
     signal_threshold: float = 0.0
@@ -212,6 +227,14 @@ class SideInfoComparisonConfig:
             raise ValueError(
                 f"frequency must be one of {_VALID_FREQUENCIES}, got {self.frequency!r}."
             )
+        for field_name, value in (
+            ("train_frequency", self.train_frequency),
+            ("eval_frequency", self.eval_frequency),
+        ):
+            if value is not None and value not in _VALID_FREQUENCIES:
+                raise ValueError(
+                    f"{field_name} must be one of {_VALID_FREQUENCIES} or None, got {value!r}."
+                )
         if not isinstance(self.walk_forward, WalkForwardConfig):
             raise TypeError(
                 "walk_forward must be a WalkForwardConfig, "
@@ -268,6 +291,15 @@ class SideInfoComparisonConfig:
                 f"got {self.signal_threshold!r}."
             )
         object.__setattr__(self, "signal_threshold", signal_threshold)
+        if (
+            _FREQUENCY_ORDER[self.effective_train_frequency]
+            < _FREQUENCY_ORDER[self.effective_eval_frequency]
+        ):
+            raise ValueError(
+                "train_frequency must be the same as or coarser than eval_frequency; "
+                f"got train_frequency={self.effective_train_frequency!r} "
+                f"and eval_frequency={self.effective_eval_frequency!r}."
+            )
 
         if self.data.is_reproducible:
             if self.sha256 is None:
@@ -292,6 +324,14 @@ class SideInfoComparisonConfig:
     @property
     def is_reproducible(self) -> bool:
         return self.data.is_reproducible and self.sha256 is not None
+
+    @property
+    def effective_eval_frequency(self) -> str:
+        return self.eval_frequency or self.frequency
+
+    @property
+    def effective_train_frequency(self) -> str:
+        return self.train_frequency or self.effective_eval_frequency
 
     def to_dict(self) -> dict[str, Any]:
         wf = self.walk_forward
@@ -337,6 +377,7 @@ class SideInfoComparisonConfig:
                 "weight_decay": float(self.dmm.weight_decay),
                 "z_dim": int(self.dmm.z_dim),
             },
+            "eval_frequency": self.eval_frequency,
             "frequency": self.frequency,
             "notes": self.notes,
             "seasonality": {
@@ -370,6 +411,7 @@ class SideInfoComparisonConfig:
                 "tol": float(wf.tol),
                 "variance_floor_policy": str(wf.variance_floor_policy),
             },
+            "train_frequency": self.train_frequency,
         }
 
     @classmethod
@@ -472,6 +514,8 @@ class SideInfoComparisonConfig:
             dmm=dmm,
             vol_ratio=vol_ratio_cfg,
             seasonality=seasonality_cfg,
+            train_frequency=raw.get("train_frequency"),
+            eval_frequency=raw.get("eval_frequency"),
             cost_bps_per_turnover=float(raw.get("cost_bps_per_turnover", 0.0)),
             signal_policy=raw.get("signal_policy", "sign"),
             signal_threshold=float(raw.get("signal_threshold", 0.0)),
@@ -690,6 +734,8 @@ class DmmVariantWindow:
     chosen_k: int
     n_train_obs: int
     n_forecast_obs: int
+    train_frequency: str
+    eval_frequency: str
     feature_identity: str
     side_info_dim: int
     num_epochs: int
@@ -716,6 +762,21 @@ class DmmVariantWindow:
         if self.n_forecast_obs < 2:
             raise ValueError(
                 f"n_forecast_obs must be >= 2 to align signals; got {self.n_forecast_obs}."
+            )
+        if self.train_frequency not in _VALID_FREQUENCIES:
+            raise ValueError(
+                "train_frequency must be one of "
+                f"{_VALID_FREQUENCIES}, got {self.train_frequency!r}."
+            )
+        if self.eval_frequency not in _VALID_FREQUENCIES:
+            raise ValueError(
+                f"eval_frequency must be one of {_VALID_FREQUENCIES}, got {self.eval_frequency!r}."
+            )
+        if _FREQUENCY_ORDER[self.train_frequency] < _FREQUENCY_ORDER[self.eval_frequency]:
+            raise ValueError(
+                "train_frequency must be the same as or coarser than eval_frequency; "
+                f"got train_frequency={self.train_frequency!r} "
+                f"and eval_frequency={self.eval_frequency!r}."
             )
         if self.train_end < self.train_start:
             raise ValueError("train_end must not precede train_start.")
@@ -866,7 +927,12 @@ def run_side_info_comparison(
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
     reproducible = validate_data_reproducibility(config, stacklevel=3)
-    returns = load_returns_from_source(config.data, frequency=config.frequency)
+    eval_frequency = config.effective_eval_frequency
+    train_frequency = config.effective_train_frequency
+    returns = load_returns_from_source(config.data, frequency=eval_frequency)
+    dmm_train_returns = returns
+    if train_frequency != eval_frequency:
+        dmm_train_returns = load_returns_from_source(config.data, frequency=train_frequency)
 
     baseline_wf = _checkpointed_stage(
         _CHECKPOINT_BASELINE_WF,
@@ -947,6 +1013,7 @@ def run_side_info_comparison(
         expected_type=SideInfoVariantResult,
         factory=lambda: _run_dmm_variant(
             returns=returns,
+            train_returns=dmm_train_returns,
             config=config,
             baseline_windows=baseline_wf.windows,
         ),
@@ -1493,10 +1560,17 @@ def _run_default_hmm_variant(
 def _run_dmm_variant(
     *,
     returns: pd.Series,
+    train_returns: pd.Series,
     config: SideInfoComparisonConfig,
     baseline_windows: tuple[WalkForwardWindow, ...],
 ) -> SideInfoVariantResult:
-    """Run the DMM benchmark on the same windows as the baseline."""
+    """Run the DMM benchmark on the same windows as the baseline.
+
+    When ``train_returns`` is coarser than ``returns`` the DMM is fit on the
+    coarser series, but forecast features and predictions remain on the finer
+    evaluation series. This is the deliberate Gate L approximation described in
+    the config/module docs.
+    """
     import torch
 
     from hft_hmm.models.dmm import expected_next_returns_from_dmm, fit_dmm
@@ -1505,7 +1579,8 @@ def _run_dmm_variant(
         raise ValueError(f"config.dmm.obs_dim must be 1, got {config.dmm.obs_dim}.")
 
     cost = config.cost_bps_per_turnover
-    bar_dates = returns.index.date
+    eval_frequency = config.effective_eval_frequency
+    train_frequency = config.effective_train_frequency
 
     windows: list[DmmVariantWindow] = []
     signal_parts: list[pd.Series] = []
@@ -1517,26 +1592,47 @@ def _run_dmm_variant(
 
     for window_position, baseline_window in enumerate(baseline_windows, start=1):
         window_start_time = time.monotonic()
-        train_mask = (bar_dates >= baseline_window.train_start.date()) & (
-            bar_dates <= baseline_window.train_end.date()
-        )
-        train_slice = returns.loc[train_mask]
+        train_slice = returns.loc[baseline_window.train_start : baseline_window.train_end]
         effective_forecast = returns.loc[
             baseline_window.forecast_start : baseline_window.forecast_end
         ]
+        train_fit_slice = train_returns.loc[baseline_window.train_start : baseline_window.train_end]
         if effective_forecast.shape[0] < 2:
             raise ValueError(
                 "each effective forecast window must contain at least 2 observations; "
                 f"window {baseline_window.index} has {effective_forecast.shape[0]}."
             )
+        if train_fit_slice.shape[0] < 2:
+            raise ValueError(
+                f"variant {DMM_VARIANT!r} window {baseline_window.index} has fewer than 2 "
+                f"training observations at train_frequency={train_frequency!r}."
+            )
 
-        feature_full = _build_feature(
+        train_feature = _build_feature(
+            VOLATILITY_RATIO_VARIANT,
+            train_fit_slice,
+            config,
+        )
+        train_feature_clean = train_feature.dropna()
+        if train_feature_clean.shape[0] < 2:
+            raise ValueError(
+                f"variant {DMM_VARIANT!r} window {baseline_window.index} has fewer than 2 "
+                "finite training feature observations after dropping the NaN prefix "
+                f"at train_frequency={train_frequency!r}."
+            )
+        train_returns_clean = train_fit_slice.loc[train_feature_clean.index]
+        standardized_train_feature, _ = _standardize_feature_train_only(
+            train_feature_clean,
+            train_feature_clean,
+        )
+
+        eval_feature_full = _build_feature(
             VOLATILITY_RATIO_VARIANT,
             pd.concat([train_slice, effective_forecast]),
             config,
         )
-        feature_train = feature_full.reindex(train_slice.index)
-        feature_forecast = feature_full.reindex(effective_forecast.index)
+        feature_train = eval_feature_full.reindex(train_slice.index)
+        feature_forecast = eval_feature_full.reindex(effective_forecast.index)
 
         forecast_has_nan = (
             bool(feature_forecast.isna().any().any())
@@ -1550,16 +1646,19 @@ def _run_dmm_variant(
                 "fully initialized before the forecast slice."
             )
 
-        feature_train_clean = feature_train.dropna()
-        if feature_train_clean.shape[0] < 2:
+        eval_feature_train_clean = feature_train.dropna()
+        if eval_feature_train_clean.shape[0] < 2:
             raise ValueError(
                 f"variant {DMM_VARIANT!r} window {baseline_window.index} has fewer than 2 "
-                "finite training feature observations after dropping the NaN prefix."
+                "finite evaluation-frequency training feature observations after dropping "
+                "the NaN prefix."
             )
-        train_returns_clean = train_slice.loc[feature_train_clean.index]
-        standardized_train_feature, standardized_forecast_feature = _standardize_feature_train_only(
-            feature_train_clean,
-            feature_forecast,
+        eval_train_returns_clean = train_slice.loc[eval_feature_train_clean.index]
+        standardized_eval_train_feature, standardized_forecast_feature = (
+            _standardize_feature_train_only(
+                eval_feature_train_clean,
+                feature_forecast,
+            )
         )
 
         side_info_dim = _feature_side_info_dim(standardized_train_feature)
@@ -1586,8 +1685,8 @@ def _run_dmm_variant(
         if config.signal_policy == "conviction_weighted":
             train_expected = expected_next_returns_from_dmm(
                 fitted.model,
-                train_returns_clean,
-                standardized_train_feature,
+                eval_train_returns_clean,
+                standardized_eval_train_feature,
             )
             signal_scale = conviction_scale_from_train_predictions(train_expected.to_numpy())
 
@@ -1617,13 +1716,15 @@ def _run_dmm_variant(
         windows.append(
             DmmVariantWindow(
                 index=int(baseline_window.index),
-                train_start=train_slice.index.min(),
-                train_end=train_slice.index.max(),
+                train_start=train_fit_slice.index.min(),
+                train_end=train_fit_slice.index.max(),
                 forecast_start=effective_forecast.index.min(),
                 forecast_end=effective_forecast.index.max(),
                 chosen_k=int(baseline_window.chosen_k),
-                n_train_obs=int(train_slice.shape[0]),
+                n_train_obs=int(train_fit_slice.shape[0]),
                 n_forecast_obs=int(effective_forecast.shape[0]),
+                train_frequency=train_frequency,
+                eval_frequency=eval_frequency,
                 feature_identity=_DMM_FEATURE_IDENTITY,
                 side_info_dim=side_info_dim,
                 num_epochs=int(dmm_config.num_epochs),
@@ -1646,6 +1747,7 @@ def _run_dmm_variant(
         print(
             f"[{DMM_VARIANT}] window {window_position}/{total_windows} "
             f"index={int(baseline_window.index)} done in {elapsed:.1f}s "
+            f"train_frequency={train_frequency} eval_frequency={eval_frequency} "
             f"final_loss={float(fitted.loss_history[-1]):.6f}",
             file=sys.stderr,
             flush=True,
@@ -2018,7 +2120,7 @@ def _write_summary(
     payload: dict[str, Any] = {
         "comparison_id": cmp_id,
         "reproducible": reproducible,
-        "frequency": config.frequency,
+        "frequency": config.effective_eval_frequency,
         "cost_bps_per_turnover": float(config.cost_bps_per_turnover),
         "metric_interpretation": {
             "pre-cost": (
@@ -2105,6 +2207,8 @@ def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
             record["posterior_mean_W"] = w.posterior_mean_W.tolist()
             record["posterior_mean_b"] = w.posterior_mean_b.tolist()
         elif isinstance(w, DmmVariantWindow):
+            record["train_frequency"] = w.train_frequency
+            record["eval_frequency"] = w.eval_frequency
             record["feature_identity"] = w.feature_identity
             record["side_info_dim"] = int(w.side_info_dim)
             record["num_epochs"] = int(w.num_epochs)
