@@ -306,6 +306,121 @@ def test_repro_cli_bit_for_bit(tmp_path: Path) -> None:
     assert (printed / "log.jsonl").read_bytes() == (in_process.directory / "log.jsonl").read_bytes()
 
 
+def test_repro_cli_dmm_comparison_is_reproducible_within_tolerance_at_one_thread(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("pyro")
+
+    from hft_hmm.experiments.side_info_comparison import DMM_VARIANT
+    from hft_hmm.features.seasonality import SeasonalityConfig
+    from hft_hmm.features.splines import SplinePredictorConfig
+    from hft_hmm.features.volatility_ratio import VolatilityRatioConfig
+    from hft_hmm.models.dmm import (
+        SINGLE_THREAD_REPRO_ABS_TOLERANCE,
+        SINGLE_THREAD_REPRO_TORCH_THREADS,
+        DMMConfig,
+    )
+    from hft_hmm.models.iohmm_approx import BucketedTransitionConfig
+    from hft_hmm.models.iohmm_continuous import ContinuousIOHMMConfig
+
+    config = SideInfoComparisonConfig(
+        data=DataSourceConfig(kind="csv", path=str(SAMPLE_FIXTURE)),
+        frequency="5min",
+        walk_forward=WalkForwardConfig(
+            h_days=3,
+            t_days=1,
+            retrain_every_days=1,
+            k_values=(2,),
+            random_state=0,
+            n_iter=100,
+            tol=1e-4,
+            min_variance=1e-8,
+            variance_floor_policy="clamp",
+        ),
+        spline=SplinePredictorConfig(n_knots=5, min_obs=20),
+        bucketed_transition=BucketedTransitionConfig(n_buckets=3, smoothing=1.0),
+        continuous_iohmm=ContinuousIOHMMConfig(
+            num_warmup=5,
+            num_samples=8,
+            seed=0,
+            rhat_threshold=10.0,
+            ess_bulk_threshold=1,
+        ),
+        dmm=DMMConfig(
+            obs_dim=1,
+            z_dim=2,
+            emission_dim=4,
+            transition_dim=4,
+            rnn_dim=4,
+            num_layers=1,
+            rnn_dropout_rate=0.0,
+            num_epochs=2,
+            mini_batch_size=1,
+            learning_rate=5e-3,
+            beta1=0.9,
+            beta2=0.999,
+            clip_norm=5.0,
+            lr_decay=1.0,
+            weight_decay=0.0,
+            min_annealing_factor=0.2,
+            annealing_epochs=1,
+            seed=7,
+        ),
+        vol_ratio=VolatilityRatioConfig(fast_window=50, slow_window=100),
+        seasonality=SeasonalityConfig(bucket_minutes=1, exchange_tz="America/Chicago"),
+        train_frequency="5min",
+        eval_frequency="5min",
+        cost_bps_per_turnover=1.0,
+        notes="repro-test-dmm",
+        sha256=SAMPLE_SHA256,
+    )
+    expected_id = comparison_id(config)
+    config_yaml = tmp_path / "dmm_cfg.yaml"
+    config_yaml.write_bytes(config.to_yaml_bytes())
+
+    def _run(runs_root: Path) -> Path:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(REPRO_SCRIPT),
+                str(config_yaml),
+                "--runs-root",
+                str(runs_root),
+                "--torch-threads",
+                str(SINGLE_THREAD_REPRO_TORCH_THREADS),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        return Path(completed.stdout.strip())
+
+    first_dir = _run(tmp_path / "runs-a")
+    second_dir = _run(tmp_path / "runs-b")
+    assert first_dir == tmp_path / "runs-a" / expected_id
+    assert second_dir == tmp_path / "runs-b" / expected_id
+
+    first_summary = json.loads((first_dir / "summary.json").read_text())
+    second_summary = json.loads((second_dir / "summary.json").read_text())
+    first_variant = first_summary["variants"][DMM_VARIANT]["summary"]
+    second_variant = second_summary["variants"][DMM_VARIANT]["summary"]
+
+    np.testing.assert_allclose(
+        first_variant["pre-cost"]["sharpe_ratio"],
+        second_variant["pre-cost"]["sharpe_ratio"],
+        atol=SINGLE_THREAD_REPRO_ABS_TOLERANCE,
+        rtol=0.0,
+    )
+    np.testing.assert_allclose(
+        first_variant["post-cost"]["sharpe_ratio"],
+        second_variant["post-cost"]["sharpe_ratio"],
+        atol=SINGLE_THREAD_REPRO_ABS_TOLERANCE,
+        rtol=0.0,
+    )
+
+
 def test_repro_cli_rejects_missing_config(tmp_path: Path) -> None:
     missing = tmp_path / "nope.yaml"
     completed = subprocess.run(

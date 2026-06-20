@@ -25,10 +25,12 @@ Variable-length mini-batches are represented as padded tensors plus
 ``seq_lengths``. The model and guide preserve the P0 spike's masking strategy so
 padded timesteps do not contribute to latent or observation log-probability.
 The ``fit_dmm()`` entry point seeds Python's ``random`` module, NumPy, Torch,
-and Pyro from ``DMMConfig.seed``. On CPU, the unit tests pin Torch to one
-thread and assert repeated SVI fits match within an absolute loss tolerance of
-``1e-6``; reproducibility is therefore documented as within-tolerance rather
-than bit-for-bit identical across all environments.
+and Pyro from ``DMMConfig.seed``. The reproducibility contract for the SVI path
+assumes a single CPU Torch thread: the tests pin ``torch.set_num_threads(1)``
+and assert repeated seeded fits match within ``1e-6`` absolute tolerance.
+Across other BLAS threading setups the same seed can still drift slightly, so
+the DMM is documented as reproducible within tolerance rather than bit-for-bit
+identical across all environments.
 
 References: Krishnan et al. (2017) §3-4
 """
@@ -77,6 +79,8 @@ DEFAULT_WEIGHT_DECAY: Final[float] = 2.0
 DEFAULT_MIN_ANNEALING_FACTOR: Final[float] = 0.2
 DEFAULT_ANNEALING_EPOCHS: Final[int] = 1000
 DEFAULT_SEED: Final[int] = 54
+SINGLE_THREAD_REPRO_TORCH_THREADS: Final[int] = 1
+SINGLE_THREAD_REPRO_ABS_TOLERANCE: Final[float] = 1e-6
 
 
 @dataclass(frozen=True)
@@ -89,10 +93,11 @@ class DMMConfig:
 
     Reproducibility note: :func:`fit_dmm` seeds Python's ``random`` module,
     NumPy, Torch, and Pyro from ``seed`` before constructing the model and SVI
-    objects. The unit tests pin Torch to one CPU thread and assert repeated loss
-    histories agree within ``1e-6`` absolute tolerance; callers should treat the
-    fit as reproducible within tolerance rather than exactly identical across
-    machines or BLAS threading setups.
+    objects. The documented guarantee assumes ``torch.set_num_threads(1)``:
+    repeated seeded fits should then agree within
+    ``SINGLE_THREAD_REPRO_ABS_TOLERANCE`` absolute tolerance. Callers should
+    still treat the fit as reproducible within tolerance rather than exactly
+    identical across machines or BLAS threading setups.
 
     References: Krishnan et al. (2017) §3-4
     """

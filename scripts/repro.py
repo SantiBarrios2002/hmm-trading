@@ -6,9 +6,18 @@ selects the standalone predictor runner. In standalone predictor mode, HMM-only
 ``walk_forward`` fields are not consumed: ``min_variance``,
 ``variance_floor_policy``, ``k_values``, ``n_iter``, and ``tol``.
 
+For DMM side-information comparisons, ``config.dmm.seed`` seeds Python's
+``random`` module, NumPy, Torch, and Pyro inside ``fit_dmm()``. The
+reproducibility guarantee is intentionally stated as a tolerance band rather
+than bit-for-bit identity because SVI can drift across BLAS threading setups.
+To pin the documented contract, run the script with ``--torch-threads 1``;
+seeded DMM runs should then agree within ``1e-6`` absolute tolerance on the
+reported metrics.
+
 Usage:
     python scripts/repro.py configs/example_es_csv.yaml
     python scripts/repro.py my_config.yaml --force --runs-root custom_runs
+    python scripts/repro.py my_dmm_config.yaml --torch-threads 1
 """
 
 from __future__ import annotations
@@ -53,11 +62,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite an existing run directory with the same run_id.",
     )
+    parser.add_argument(
+        "--torch-threads",
+        type=int,
+        default=None,
+        help=(
+            "Pin torch CPU threads before dispatch. Use 1 for the documented "
+            "DMM reproducibility guarantee."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.config.exists():
         print(f"Config not found: {args.config}", file=sys.stderr)
         return 2
+    if args.torch_threads is not None and args.torch_threads < 1:
+        parser.error("--torch-threads must be >= 1.")
+
+    if args.torch_threads is not None:
+        if not _set_torch_threads(args.torch_threads):
+            return 2
 
     raw = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -101,6 +125,20 @@ def _warn_on_ignored_hmm_keys(raw: dict[str, object]) -> None:
         UserWarning,
         stacklevel=2,
     )
+
+
+def _set_torch_threads(num_threads: int) -> bool:
+    try:
+        import torch
+    except ImportError:
+        print(
+            "--torch-threads requires torch to be installed in the current environment.",
+            file=sys.stderr,
+        )
+        return False
+
+    torch.set_num_threads(num_threads)
+    return True
 
 
 if __name__ == "__main__":
