@@ -39,6 +39,13 @@ Five reproducible runs back this document:
   Gate K run within numerical noise (e.g. vol-ratio bucketed 0.7583 vs
   0.7577, vol-ratio HMC 0.6515 vs 0.6513).
 
+- `runs/gate_m_cv_vs_bic/evidence.json` — Gate M cross-validation vs BIC
+  K-selection head-to-head, baseline Baum-Welch only (the HMC side-info
+  variants do not affect the K choice and were not run). Both routes select
+  `K = 4` in 100% of windows on `h_days ∈ {23, 60}`; a negative result that
+  falsifies the predicted "CV recovers K = 2" lever. See the Gate M subsection
+  below.
+
 Gate Q lands the combined volatility-ratio plus seasonality HMC
 continuous-parametric IOHMM capability and its full 6-year headline Sharpe
 rerun (`runs/22bbd2c8d0a4`). The combined variant is a **negative result**:
@@ -279,6 +286,61 @@ forecast-side directional signal becomes noisier even though log-likelihood
 on training is higher. This is a classical overfitting trade-off, made
 concrete on this dataset.
 
+### Gate M: cross-validation vs BIC K selection (also negative)
+
+The structural-change run above showed BIC over-selects `K = 4` on
+`h_days = 60`. Paper §4 names cross-validation as an independent K-selection
+route, and the "reasonable next levers" list below predicted CV might recover
+the profitable `K = 2` by choosing on held-out predictive performance. Gate M
+implements that route (deterministic expanding-window forward-chaining, per-bar
+held-out log-likelihood; [`selection/cross_validation.py`](../src/hft_hmm/selection/cross_validation.py))
+and tests the prediction head-to-head against BIC on the same walk-forward
+windows, on both training regimes. Evidence:
+`runs/gate_m_cv_vs_bic/evidence.json` (baseline Baum-Welch K-selection only —
+the K choice is computed in the walk-forward selection step and is independent
+of the expensive HMC side-info variants, which were not run).
+
+**Result — the prediction is falsified.** CV selects `K = 4` in *every* window,
+identically to BIC, on both regimes:
+
+| regime | windows | CV chosen-K | BIC chosen-K | pre-cost Sharpe (both) |
+|---|---:|---|---|---:|
+| `h_days = 23` | 92 | `K=4 ×92` | `K=4 ×92` | 0.0007 |
+| `h_days = 60` | 90 | `K=4 ×90` | `K=4 ×90` | 0.0006 |
+
+The two routes do not merely produce the same histogram — they make the
+identical per-window choice in 100% of windows (182/182). Pre-cost Sharpe under
+the selected `K` collapses to ≈ 0 on both regimes, versus 0.5298 for the
+`K = 2` baseline.
+
+**Why CV does not help here.** The "next lever" framing assumed CV optimizes
+"the metric we actually care about." It does not: the paper-faithful §4 CV
+scores held-out **log-likelihood** — a density-fit metric — not directional or
+Sharpe-aligned predictive accuracy. `K = 4` is a better density model of minute
+returns (higher held-out log-likelihood), so CV prefers it for the same reason
+BIC does; the extra states capture distributional structure that does not
+translate into a cleaner directional forecast. Two independent likelihood-based
+selection routes therefore agree on the wrong-for-trading `K`.
+
+**Consequences.**
+
+1. **No headline result changes.** Every headline config pins `k_values: [2]`
+   (HMC Gate K/Q, base side-info, conviction), so the reported Sharpe numbers
+   were never produced by automatic selection. Gate M instead *justifies* that
+   pinning: the profitable `K = 2` is not recoverable by either of the paper's
+   likelihood-based selection routes, so fixing it a priori on out-of-sample
+   trading grounds is the correct call, not a cherry-pick.
+2. **It strengthens the Gate P (bridge-sampling) deferral.** Bridge sampling is
+   a third likelihood-family route (Bayesian marginal likelihood); with BIC and
+   CV already unanimous on `K = 4`, a third likelihood-based route is
+   overwhelmingly likely to agree, so it would restate this answer rather than
+   produce a new one (see `IMPLEMENTATION_PLAN.md` §4 and `dmm_mcmc_roadmap.md`
+   §7.5).
+3. **The one genuinely untested lever** is a directional / Sharpe-aligned CV
+   score in place of held-out log-likelihood — the only variant that could
+   plausibly recover `K = 2`. It departs from the paper's likelihood-based §4
+   CV and is documented future work, not part of this gate.
+
 ### Summary of Sharpe-improvement experiments
 
 All three proposed levers individually fail to improve pre-cost daily Sharpe
@@ -310,10 +372,15 @@ levers most likely to help — based on what *didn't* work above — are:
   expected cross-effect lift did not materialize; combining the predictors
   diluted the vol-ratio edge. See the combined-variant rows in the Gate K /
   Gate Q comparison table above.
-- **Cross-validation `K` selection instead of BIC.** The §4 paper compares
-  CV, AIC/BIC, and MCMC bridge sampling; we only implement BIC. CV would
-  pick `K` by held-out predictive performance, which is the metric we
-  actually care about.
+- ~~**Cross-validation `K` selection instead of BIC.** CV would pick `K` by
+  held-out predictive performance, which is the metric we actually care
+  about.~~ **Tested (Gate M) and it is a negative result:** the paper-faithful
+  §4 CV scores held-out *log-likelihood*, not directional accuracy, so it
+  selects `K = 4` in 100% of windows — identically to BIC — on both
+  `h_days = 23` and `h_days = 60` (pre-cost Sharpe ≈ 0). The repo now
+  implements two of the §4 trio (BIC + CV); the third, MCMC bridge sampling, is
+  deferred (Gate P) and the Gate M result makes it very likely redundant. See
+  the Gate M subsection above.
 - **Smarter feature scaling and bucketing.** Quantile-based bucket
   boundaries are now available (`boundary_mode: "quantile"`, shipped
   via PR #46) but were not used in the headline run; richer joint

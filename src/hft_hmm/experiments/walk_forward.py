@@ -24,7 +24,8 @@ Algorithm
    - Fit a :class:`~hft_hmm.models.gaussian_hmm.GaussianHMMWrapper`. When the
      config carries multiple candidate ``K`` values, pick per window via
      :func:`~hft_hmm.selection.compare_state_counts` and its ``best_by_bic``
-     choice; otherwise use the single candidate directly.
+     choice, or via forward-chaining cross-validation when
+     ``k_selection="cv"``; otherwise use the single candidate directly.
    - Run :func:`~hft_hmm.inference.forward_filter` on the forecast slice and
      emit a signal via :func:`~hft_hmm.strategy.build_signal`. The default
      ``signal_policy="sign"`` reproduces the sign-based path; setting it to
@@ -48,7 +49,7 @@ References: §2.3 rolling-window overnight retraining scheme (evaluation layer)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -68,7 +69,7 @@ from hft_hmm.models.gaussian_hmm import (
     GaussianHMMWrapper,
     VarianceFloorPolicy,
 )
-from hft_hmm.selection import compare_state_counts
+from hft_hmm.selection import compare_state_counts, select_k_by_cv
 from hft_hmm.strategy import (
     SignalPolicy,
     align_signal_with_future_return,
@@ -80,6 +81,8 @@ from hft_hmm.strategy.signals import (
 )
 
 _MIN_CONVICTION_SCALE: Final[float] = 1e-12
+KSelectionMethod = Literal["best_by_bic", "cv"]
+_K_SELECTION_METHODS: Final[tuple[str, ...]] = ("best_by_bic", "cv")
 
 __category__: Final[str] = EVALUATION_LAYER
 WALK_FORWARD_REFERENCE: Final[PaperReference] = reference(
@@ -94,7 +97,10 @@ class WalkForwardConfig:
     Paper-anchored defaults: ``h_days = 23`` trading days (§3.1 rolling
     window), ``t_days = 1`` day forecast horizon (paper retrains nightly),
     ``retrain_every_days = t_days`` (retrain once per forecast horizon), and
-    ``k_values = (2,)`` (paper's cross-validation default K=2).
+    ``k_values = (2,)`` (paper's cross-validation default K=2). When
+    ``k_values`` contains multiple candidates, ``k_selection="best_by_bic"``
+    preserves the historical BIC route; ``k_selection="cv"`` uses deterministic
+    expanding-window forward-chaining CV with ``cv_folds`` held-out blocks.
     """
 
     h_days: int = 23
@@ -106,6 +112,8 @@ class WalkForwardConfig:
     tol: float = 1e-4
     min_variance: float = 1e-8
     variance_floor_policy: VarianceFloorPolicy = "clamp"
+    k_selection: KSelectionMethod = "best_by_bic"
+    cv_folds: int = 5
 
     def __post_init__(self) -> None:
         if self.h_days < 1:
@@ -132,6 +140,14 @@ class WalkForwardConfig:
                 "variance_floor_policy must be one of "
                 f"{sorted(_VARIANCE_FLOOR_POLICIES)}, got {self.variance_floor_policy!r}."
             )
+        if self.k_selection not in _K_SELECTION_METHODS:
+            raise ValueError(
+                f"k_selection must be one of {_K_SELECTION_METHODS}, got {self.k_selection!r}."
+            )
+        if isinstance(self.cv_folds, bool) or not isinstance(self.cv_folds, int):
+            raise TypeError(f"cv_folds must be int, got {type(self.cv_folds).__name__}.")
+        if self.cv_folds < 1:
+            raise ValueError(f"cv_folds must be >= 1, got {self.cv_folds}.")
 
         k_tuple = tuple(self.k_values)
         if not k_tuple:
@@ -147,6 +163,7 @@ class WalkForwardConfig:
         object.__setattr__(self, "retrain_every_days", int(retrain_every_days))
         object.__setattr__(self, "k_values", k_tuple)
         object.__setattr__(self, "min_variance", float(self.min_variance))
+        object.__setattr__(self, "cv_folds", int(self.cv_folds))
 
 
 @dataclass(frozen=True)
@@ -163,6 +180,8 @@ class WalkForwardWindow:
     n_train_obs: int
     n_forecast_obs: int
     summary: pd.DataFrame
+    bic_chosen_k: int | None = None
+    cv_scores_by_k: tuple[tuple[int, float], ...] = ()
 
     def __post_init__(self) -> None:
         if self.index < 0:
@@ -184,6 +203,36 @@ class WalkForwardWindow:
             )
         if not isinstance(self.summary, pd.DataFrame):
             raise TypeError("summary must be a pd.DataFrame.")
+        if self.bic_chosen_k is None:
+            if self.cv_scores_by_k:
+                raise ValueError("cv_scores_by_k must be empty when bic_chosen_k is None.")
+        else:
+            if self.bic_chosen_k < 2:
+                raise ValueError(f"bic_chosen_k must be >= 2, got {self.bic_chosen_k}.")
+            if not self.cv_scores_by_k:
+                raise ValueError("cv_scores_by_k must be non-empty when bic_chosen_k is set.")
+            normalized_scores: list[tuple[int, float]] = []
+            for k, score in self.cv_scores_by_k:
+                if isinstance(k, bool) or not isinstance(k, int):
+                    raise TypeError(
+                        f"cv_scores_by_k entries must use int K, got {type(k).__name__}."
+                    )
+                if k < 2:
+                    raise ValueError(f"cv_scores_by_k entries must use K >= 2, got {k}.")
+                score_float = float(score)
+                if not np.isfinite(score_float):
+                    raise ValueError("cv_scores_by_k entries must contain finite scores.")
+                normalized_scores.append((int(k), score_float))
+            if [k for k, _ in normalized_scores] != sorted(k for k, _ in normalized_scores):
+                raise ValueError("cv_scores_by_k must be sorted by K ascending.")
+            if len({k for k, _ in normalized_scores}) != len(normalized_scores):
+                raise ValueError("cv_scores_by_k must not contain duplicate K values.")
+            score_k_values = {k for k, _ in normalized_scores}
+            if self.chosen_k not in score_k_values:
+                raise ValueError("cv_scores_by_k must include chosen_k.")
+            if self.bic_chosen_k not in score_k_values:
+                raise ValueError("cv_scores_by_k must include bic_chosen_k.")
+            object.__setattr__(self, "cv_scores_by_k", tuple(normalized_scores))
 
 
 @dataclass(frozen=True)
@@ -343,7 +392,8 @@ def walk_forward(
                 f"for t_days={config.t_days} and retrain_every_days={retrain_every_days}."
             )
 
-        chosen_k = _select_k(train_slice, config)
+        selection_decision = _select_k_with_diagnostics(train_slice, config)
+        chosen_k = selection_decision.chosen_k
         wrapper = GaussianHMMWrapper(
             n_states=chosen_k,
             random_state=config.random_state,
@@ -403,6 +453,8 @@ def walk_forward(
                 n_train_obs=int(train_slice.shape[0]),
                 n_forecast_obs=int(effective_forecast_slice.shape[0]),
                 summary=window_summary,
+                bic_chosen_k=selection_decision.bic_chosen_k,
+                cv_scores_by_k=selection_decision.cv_scores_by_k,
             )
         )
 
@@ -448,26 +500,75 @@ def conviction_scale_from_train_predictions(
     return max(raw_scale, _MIN_CONVICTION_SCALE)
 
 
+@dataclass(frozen=True)
+class _KSelectionDecision:
+    chosen_k: int
+    bic_chosen_k: int | None = None
+    cv_scores_by_k: tuple[tuple[int, float], ...] = ()
+
+
 def _select_k(train_slice: pd.Series, config: WalkForwardConfig) -> int:
     """Return the chosen K for a single training window.
 
-    With a single candidate, use it directly. With multiple candidates, run
-    the model-selection sweep and take ``best_by_bic`` — BIC penalizes
-    complexity more aggressively than AIC, which matches the paper's
-    preference for parsimonious 2-3 state models in §3.1.
+    With a single candidate, use it directly. With multiple candidates and
+    ``k_selection="best_by_bic"``, run the model-selection sweep and take
+    ``best_by_bic``. With ``k_selection="cv"``, run deterministic
+    forward-chaining CV and take the best mean per-bar held-out
+    log-likelihood.
     """
+    return _select_k_with_diagnostics(train_slice, config).chosen_k
+
+
+def _select_k_with_diagnostics(
+    train_slice: pd.Series,
+    config: WalkForwardConfig,
+) -> _KSelectionDecision:
     if len(config.k_values) == 1:
-        return int(config.k_values[0])
-    selection = compare_state_counts(
-        train_slice,
-        k_values=config.k_values,
-        random_state=config.random_state,
-        n_iter=config.n_iter,
-        tol=config.tol,
-        min_variance=config.min_variance,
-        variance_floor_policy=config.variance_floor_policy,
+        return _KSelectionDecision(chosen_k=int(config.k_values[0]))
+
+    if config.k_selection == "best_by_bic":
+        selection = compare_state_counts(
+            train_slice,
+            k_values=config.k_values,
+            random_state=config.random_state,
+            n_iter=config.n_iter,
+            tol=config.tol,
+            min_variance=config.min_variance,
+            variance_floor_policy=config.variance_floor_policy,
+        )
+        return _KSelectionDecision(chosen_k=int(selection.best_by_bic))
+
+    if config.k_selection == "cv":
+        cv_selection = select_k_by_cv(
+            train_slice,
+            k_values=config.k_values,
+            n_folds=config.cv_folds,
+            random_state=config.random_state,
+            n_iter=config.n_iter,
+            tol=config.tol,
+            min_variance=config.min_variance,
+            variance_floor_policy=config.variance_floor_policy,
+        )
+        bic_selection = compare_state_counts(
+            train_slice,
+            k_values=config.k_values,
+            random_state=config.random_state,
+            n_iter=config.n_iter,
+            tol=config.tol,
+            min_variance=config.min_variance,
+            variance_floor_policy=config.variance_floor_policy,
+        )
+        return _KSelectionDecision(
+            chosen_k=int(cv_selection.chosen_k),
+            bic_chosen_k=int(bic_selection.best_by_bic),
+            cv_scores_by_k=tuple(
+                (int(row.k), float(row.mean_heldout_log_likelihood)) for row in cv_selection.rows
+            ),
+        )
+
+    raise ValueError(
+        f"k_selection must be one of {_K_SELECTION_METHODS}, got {config.k_selection!r}."
     )
-    return int(selection.best_by_bic)
 
 
 def _summarize_return_modes(

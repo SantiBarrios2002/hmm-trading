@@ -337,6 +337,21 @@ class SideInfoComparisonConfig:
         wf = self.walk_forward
         retrain_every_days = wf.retrain_every_days
         assert retrain_every_days is not None  # normalized in WalkForwardConfig.__post_init__
+        walk_forward: dict[str, Any] = {
+            "h_days": int(wf.h_days),
+            "k_values": list(wf.k_values),
+            "min_variance": float(wf.min_variance),
+            "n_iter": int(wf.n_iter),
+            "random_state": int(wf.random_state),
+            "retrain_every_days": int(retrain_every_days),
+            "t_days": int(wf.t_days),
+            "tol": float(wf.tol),
+            "variance_floor_policy": str(wf.variance_floor_policy),
+        }
+        if wf.k_selection != "best_by_bic":
+            walk_forward["k_selection"] = wf.k_selection
+            walk_forward["cv_folds"] = int(wf.cv_folds)
+
         return {
             "bucketed_transition": {
                 "boundary_mode": self.bucketed_transition.boundary_mode,
@@ -400,17 +415,7 @@ class SideInfoComparisonConfig:
                 "fast_window": int(self.vol_ratio.fast_window),
                 "slow_window": int(self.vol_ratio.slow_window),
             },
-            "walk_forward": {
-                "h_days": int(wf.h_days),
-                "k_values": list(wf.k_values),
-                "min_variance": float(wf.min_variance),
-                "n_iter": int(wf.n_iter),
-                "random_state": int(wf.random_state),
-                "retrain_every_days": int(retrain_every_days),
-                "t_days": int(wf.t_days),
-                "tol": float(wf.tol),
-                "variance_floor_policy": str(wf.variance_floor_policy),
-            },
+            "walk_forward": walk_forward,
             "train_frequency": self.train_frequency,
         }
 
@@ -437,6 +442,8 @@ class SideInfoComparisonConfig:
             tol=float(wf_raw["tol"]),
             min_variance=float(wf_raw["min_variance"]),
             variance_floor_policy=wf_raw["variance_floor_policy"],
+            k_selection=wf_raw.get("k_selection", "best_by_bic"),
+            cv_folds=int(wf_raw.get("cv_folds", 5)),
         )
         sp_raw = raw.get("spline", {})
         spline = SplinePredictorConfig(
@@ -834,6 +841,8 @@ class SideInfoVariantResult:
     post_cost_returns: pd.Series
     summary: pd.DataFrame
     cost_bps_per_turnover: float
+    bic_chosen_k_per_window: tuple[int, ...] = ()
+    cv_scores_by_k_per_window: tuple[tuple[tuple[int, float], ...], ...] = ()
 
     def __post_init__(self) -> None:
         if self.variant not in EXPECTED_VARIANTS:
@@ -854,6 +863,61 @@ class SideInfoVariantResult:
             raise ValueError(
                 "cost_bps_per_turnover must be a finite non-negative float, "
                 f"got {self.cost_bps_per_turnover!r}."
+            )
+        if bool(self.bic_chosen_k_per_window) != bool(self.cv_scores_by_k_per_window):
+            raise ValueError(
+                "bic_chosen_k_per_window and cv_scores_by_k_per_window must both be "
+                "empty or both be populated."
+            )
+        if self.bic_chosen_k_per_window:
+            if len(self.bic_chosen_k_per_window) != len(self.windows):
+                raise ValueError(
+                    "bic_chosen_k_per_window length must match windows; "
+                    f"got {len(self.bic_chosen_k_per_window)} vs {len(self.windows)}."
+                )
+            if len(self.cv_scores_by_k_per_window) != len(self.windows):
+                raise ValueError(
+                    "cv_scores_by_k_per_window length must match windows; "
+                    f"got {len(self.cv_scores_by_k_per_window)} vs {len(self.windows)}."
+                )
+            for bic_k in self.bic_chosen_k_per_window:
+                if not isinstance(bic_k, int) or isinstance(bic_k, bool):
+                    raise TypeError(
+                        "bic_chosen_k_per_window entries must be int, "
+                        f"got {type(bic_k).__name__}."
+                    )
+                if bic_k < 2:
+                    raise ValueError(f"bic_chosen_k_per_window entries must be >= 2, got {bic_k}.")
+            normalized_scores_by_window: list[tuple[tuple[int, float], ...]] = []
+            for scores in self.cv_scores_by_k_per_window:
+                if not scores:
+                    raise ValueError("each cv_scores_by_k_per_window entry must be non-empty.")
+                normalized_scores: list[tuple[int, float]] = []
+                for k, score in scores:
+                    if not isinstance(k, int) or isinstance(k, bool):
+                        raise TypeError(
+                            "cv_scores_by_k_per_window K entries must be int, "
+                            f"got {type(k).__name__}."
+                        )
+                    if k < 2:
+                        raise ValueError(
+                            f"cv_scores_by_k_per_window K entries must be >= 2, got {k}."
+                        )
+                    score_float = float(score)
+                    if not np.isfinite(score_float):
+                        raise ValueError(
+                            "cv_scores_by_k_per_window entries must contain finite scores."
+                        )
+                    normalized_scores.append((int(k), score_float))
+                if [k for k, _ in normalized_scores] != sorted(k for k, _ in normalized_scores):
+                    raise ValueError("cv_scores_by_k_per_window scores must be sorted by K.")
+                if len({k for k, _ in normalized_scores}) != len(normalized_scores):
+                    raise ValueError("cv_scores_by_k_per_window scores must not duplicate K.")
+                normalized_scores_by_window.append(tuple(normalized_scores))
+            object.__setattr__(
+                self,
+                "cv_scores_by_k_per_window",
+                tuple(normalized_scores_by_window),
             )
 
 
@@ -1154,6 +1218,7 @@ def _build_baseline_variant(
     The baseline summary is taken verbatim from ``walk_forward`` so it stays
     bit-for-bit identical to a direct invocation.
     """
+    bic_chosen_ks, cv_scores_by_k = _selection_diagnostics_from_windows(baseline_wf.windows)
     return SideInfoVariantResult(
         variant=BASELINE_VARIANT,
         chosen_k_per_window=tuple(int(w.chosen_k) for w in baseline_wf.windows),
@@ -1163,7 +1228,33 @@ def _build_baseline_variant(
         post_cost_returns=baseline_wf.post_cost_returns,
         summary=baseline_wf.summary,
         cost_bps_per_turnover=float(cost_bps_per_turnover),
+        bic_chosen_k_per_window=bic_chosen_ks,
+        cv_scores_by_k_per_window=cv_scores_by_k,
     )
+
+
+def _selection_diagnostics_from_windows(
+    windows: tuple[WalkForwardWindow, ...],
+) -> tuple[tuple[int, ...], tuple[tuple[tuple[int, float], ...], ...]]:
+    bic_chosen_ks: list[int] = []
+    cv_scores_by_k: list[tuple[tuple[int, float], ...]] = []
+    for window in windows:
+        if window.bic_chosen_k is None:
+            if window.cv_scores_by_k:
+                raise ValueError(
+                    "walk-forward window has CV scores but no BIC chosen-K diagnostic."
+                )
+            continue
+        if not window.cv_scores_by_k:
+            raise ValueError("walk-forward window has BIC diagnostic but no CV scores.")
+        bic_chosen_ks.append(int(window.bic_chosen_k))
+        cv_scores_by_k.append(tuple((int(k), float(score)) for k, score in window.cv_scores_by_k))
+
+    if not bic_chosen_ks:
+        return (), ()
+    if len(bic_chosen_ks) != len(windows):
+        raise ValueError("CV selection diagnostics must be present for every window or none.")
+    return tuple(bic_chosen_ks), tuple(cv_scores_by_k)
 
 
 def _run_side_info_variant(
@@ -1415,6 +1506,7 @@ def _run_side_info_variant(
     summary = _summarize_return_modes(
         pre_cost_returns, post_cost_returns, cost_bps_per_turnover=cost
     )
+    bic_chosen_ks, cv_scores_by_k = _selection_diagnostics_from_windows(baseline_windows)
 
     return SideInfoVariantResult(
         variant=variant,
@@ -1425,6 +1517,8 @@ def _run_side_info_variant(
         post_cost_returns=post_cost_returns,
         summary=summary,
         cost_bps_per_turnover=float(cost),
+        bic_chosen_k_per_window=bic_chosen_ks,
+        cv_scores_by_k_per_window=cv_scores_by_k,
     )
 
 
@@ -1544,6 +1638,7 @@ def _run_default_hmm_variant(
     summary = _summarize_return_modes(
         pre_cost_returns, post_cost_returns, cost_bps_per_turnover=cost
     )
+    bic_chosen_ks, cv_scores_by_k = _selection_diagnostics_from_windows(baseline_windows)
 
     return SideInfoVariantResult(
         variant=DEFAULT_HMM_VARIANT,
@@ -1554,6 +1649,8 @@ def _run_default_hmm_variant(
         post_cost_returns=post_cost_returns,
         summary=summary,
         cost_bps_per_turnover=float(cost),
+        bic_chosen_k_per_window=bic_chosen_ks,
+        cv_scores_by_k_per_window=cv_scores_by_k,
     )
 
 
@@ -2155,7 +2252,7 @@ def _variant_payload(
         "start": aligned_returns.index.min().isoformat(),
         "end": aligned_returns.index.max().isoformat(),
     }
-    return {
+    payload: dict[str, Any] = {
         "variant": variant,
         "comparison_id": cmp_id,
         "sample_window": sample_window,
@@ -2181,11 +2278,17 @@ def _variant_payload(
             ),
         },
     }
+    if result.bic_chosen_k_per_window:
+        payload["bic_chosen_k_per_window"] = [int(k) for k in result.bic_chosen_k_per_window]
+        payload["cv_mean_heldout_log_likelihood_by_k_per_window"] = [
+            _cv_scores_payload(scores) for scores in result.cv_scores_by_k_per_window
+        ]
+    return payload
 
 
 def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
     lines = []
-    for w in result.windows:
+    for position, w in enumerate(result.windows):
         record: dict[str, Any] = {
             "index": int(w.index),
             "train_start": w.train_start.isoformat(),
@@ -2223,8 +2326,17 @@ def _write_variant_log(path: Path, result: SideInfoVariantResult) -> None:
             record["annealing_epochs"] = int(w.annealing_epochs)
             record["seed"] = int(w.seed)
             record["final_loss"] = _json_safe(w.final_loss)
+        if result.bic_chosen_k_per_window:
+            record["bic_chosen_k"] = int(result.bic_chosen_k_per_window[position])
+            record["cv_mean_heldout_log_likelihood_by_k"] = _cv_scores_payload(
+                result.cv_scores_by_k_per_window[position]
+            )
         lines.append(json.dumps(record, sort_keys=True, allow_nan=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _cv_scores_payload(scores: tuple[tuple[int, float], ...]) -> dict[str, float | None]:
+    return {str(k): _json_safe(score) for k, score in scores}
 
 
 def _write_posterior_samples(run_dir: Path, variant: str, result: SideInfoVariantResult) -> None:

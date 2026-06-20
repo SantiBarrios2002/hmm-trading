@@ -120,6 +120,8 @@ def test_walk_forward_config_defaults_match_paper() -> None:
     assert config.random_state == 0
     assert config.min_variance == pytest.approx(1e-8)
     assert config.variance_floor_policy == "clamp"
+    assert config.k_selection == "best_by_bic"
+    assert config.cv_folds == 5
 
 
 def test_walk_forward_config_rejects_invalid_values() -> None:
@@ -137,6 +139,12 @@ def test_walk_forward_config_rejects_invalid_values() -> None:
         WalkForwardConfig(min_variance=0.0)
     with pytest.raises(ValueError, match="variance_floor_policy"):
         WalkForwardConfig(variance_floor_policy="quiet")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="k_selection"):
+        WalkForwardConfig(k_selection="aic")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="cv_folds"):
+        WalkForwardConfig(cv_folds=0)
+    with pytest.raises(TypeError, match="cv_folds"):
+        WalkForwardConfig(cv_folds=2.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="k_values must contain"):
         WalkForwardConfig(k_values=())
     with pytest.raises(ValueError, match="unique"):
@@ -332,6 +340,56 @@ def test_walk_forward_selects_K_per_window_when_sweep_given() -> None:
     result = walk_forward(returns, config)
 
     assert {window.chosen_k for window in result.windows} <= {2, 3}
+
+
+def test_walk_forward_cv_selection_records_bic_counterfactual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    returns = _regime_switching_returns(n_days=10, bars_per_day=20, seed=17)
+
+    def fake_compare_state_counts(*args, **kwargs):
+        del args, kwargs
+        return SimpleNamespace(best_by_bic=3)
+
+    def fake_select_k_by_cv(*args, **kwargs):
+        del args, kwargs
+        return SimpleNamespace(
+            chosen_k=2,
+            rows=(
+                SimpleNamespace(k=2, mean_heldout_log_likelihood=1.0),
+                SimpleNamespace(k=3, mean_heldout_log_likelihood=0.0),
+            ),
+        )
+
+    monkeypatch.setattr(walk_forward_module, "compare_state_counts", fake_compare_state_counts)
+    monkeypatch.setattr(walk_forward_module, "select_k_by_cv", fake_select_k_by_cv)
+
+    cv_config = WalkForwardConfig(
+        h_days=5,
+        t_days=2,
+        k_values=(2, 3),
+        random_state=0,
+        n_iter=20,
+        k_selection="cv",
+        cv_folds=2,
+    )
+    bic_config = WalkForwardConfig(
+        h_days=5,
+        t_days=2,
+        k_values=(2, 3),
+        random_state=0,
+        n_iter=20,
+        k_selection="best_by_bic",
+    )
+
+    cv_result = walk_forward(returns, cv_config)
+    bic_result = walk_forward(returns, bic_config)
+
+    assert {window.chosen_k for window in cv_result.windows} == {2}
+    assert {window.chosen_k for window in bic_result.windows} == {3}
+    for window in cv_result.windows:
+        assert window.bic_chosen_k == 3
+        assert window.cv_scores_by_k == ((2, 1.0), (3, 0.0))
 
 
 def test_walk_forward_retrain_frequency_is_configurable() -> None:

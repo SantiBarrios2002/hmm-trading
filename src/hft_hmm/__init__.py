@@ -109,6 +109,10 @@ from hft_hmm.models import (
 from hft_hmm.preprocessing import compute_log_returns, resample_prices, train_test_split_time
 from hft_hmm.project import PROJECT_NAME, ProjectInfo, get_project_info
 from hft_hmm.selection import (
+    CROSS_VALIDATION_REFERENCE,
+    CrossValidationFoldScore,
+    CrossValidationResult,
+    CrossValidationRow,
     ModelSelectionResult,
     ModelSelectionRow,
     aic,
@@ -117,6 +121,7 @@ from hft_hmm.selection import (
     count_gaussian_hmm_parameters,
     plot_dmm_filtered_latent_trajectory,
     plot_selection_curves,
+    select_k_by_cv,
 )
 from hft_hmm.strategy import (
     SIGNAL_REFERENCE,
@@ -130,6 +135,7 @@ from hft_hmm.strategy import (
 __all__ = [
     "ALL_CATEGORIES",
     "BACKTEST_METRICS_REFERENCE",
+    "CROSS_VALIDATION_REFERENCE",
     "DEFAULT_BUCKET_MINUTES",
     "DEFAULT_EXCHANGE_TZ",
     "ENGINEERING_APPROXIMATION",
@@ -199,6 +205,9 @@ __all__ = [
     "ContinuousIOHMMConfig",
     "ContinuousIOHMMResult",
     "ContinuousSideInfoVariantWindow",
+    "CrossValidationFoldScore",
+    "CrossValidationResult",
+    "CrossValidationRow",
     "cumulative_return",
     "daily_annualized_sharpe_ratio",
     "default_labels",
@@ -230,6 +239,7 @@ __all__ = [
     "sign_signal",
     "signal_turnover",
     "signal_from_filter_result",
+    "select_k_by_cv",
     "thresholded_hold_signal",
     "summarize_backtest",
     "thresholded_signal",
