@@ -122,6 +122,7 @@ class DMMConfig:
     min_annealing_factor: float = DEFAULT_MIN_ANNEALING_FACTOR
     annealing_epochs: int = DEFAULT_ANNEALING_EPOCHS
     seed: int = DEFAULT_SEED
+    forecast_lookback: int | None = None
 
     def __post_init__(self) -> None:
         _validate_positive_int(self.obs_dim, "obs_dim")
@@ -150,6 +151,8 @@ class DMMConfig:
         )
         _validate_nonnegative_int(self.annealing_epochs, "annealing_epochs")
         _validate_nonnegative_int(self.seed, "seed")
+        if self.forecast_lookback is not None:
+            _validate_positive_int(self.forecast_lookback, "forecast_lookback")
 
         object.__setattr__(self, "rnn_dropout_rate", dropout)
         object.__setattr__(self, "min_scale", min_scale)
@@ -814,6 +817,8 @@ def expected_next_returns_from_dmm(
     fitted: DMM | DMMFitResult,
     returns: pd.Series | np.ndarray,
     side_info: pd.Series | pd.DataFrame | np.ndarray | None = None,
+    *,
+    lookback: int | None = None,
 ) -> pd.Series:
     """Return the causal DMM forecast surface ``E[Δy_{t+1} | Δy_{1:t}]``.
 
@@ -870,6 +875,7 @@ def expected_next_returns_from_dmm(
                 dmm,
                 observations=observations,
                 side_info=side_info_tensor,
+                lookback=lookback,
             )
             for t in range(n_obs):
                 transition_side_info = (
@@ -893,6 +899,8 @@ def filtered_latent_mean_trajectory_from_dmm(
     fitted: DMM | DMMFitResult,
     returns: pd.Series | np.ndarray,
     side_info: pd.Series | pd.DataFrame | np.ndarray | None = None,
+    *,
+    lookback: int | None = None,
 ) -> pd.DataFrame:
     """Return the causal filtered latent-mean trajectory for a forecast window.
 
@@ -940,6 +948,7 @@ def filtered_latent_mean_trajectory_from_dmm(
                 dmm,
                 observations=observations,
                 side_info=side_info_tensor,
+                lookback=lookback,
             )
     finally:
         dmm.train(was_training)
@@ -1190,6 +1199,7 @@ def _filtered_latent_mean_trajectory_tensor(
     *,
     observations: torch.Tensor,
     side_info: torch.Tensor | None,
+    lookback: int | None = None,
 ) -> torch.Tensor:
     _, time_steps, _ = observations.shape
     latent_trajectory = torch.empty(
@@ -1199,9 +1209,17 @@ def _filtered_latent_mean_trajectory_tensor(
         dtype=observations.dtype,
     )
     for step in range(time_steps):
-        prefix_length = step + 1
-        prefix_observations = observations[:, :prefix_length, :]
-        prefix_side_info = side_info[:, :prefix_length, :] if side_info is not None else None
+        # Full prefix [0, step] reproduces the exact expanding-window smoother and
+        # costs O(step) per step (O(T^2) overall). A finite ``lookback`` W caps the
+        # prefix to the last W bars [step+1-W, step+1), turning the trajectory into
+        # a fixed-lag smoother at O(T*W); the reverse-RNN summary of bars older than
+        # W has negligible influence on the filtered mean at ``step``. Causality is
+        # preserved either way: only rows up to ``step`` are read.
+        prefix_start = 0 if lookback is None else max(0, step + 1 - lookback)
+        prefix_observations = observations[:, prefix_start : step + 1, :]
+        prefix_side_info = (
+            side_info[:, prefix_start : step + 1, :] if side_info is not None else None
+        )
         latent_trajectory[step, :] = _filtered_latent_mean_for_prefix(
             dmm,
             prefix_observations=prefix_observations,

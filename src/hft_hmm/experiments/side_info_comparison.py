@@ -186,6 +186,39 @@ def _default_dmm_config() -> DMMConfig:
     return DMMConfig()
 
 
+def _dmm_to_payload(dmm: DMMConfig) -> dict[str, Any]:
+    """Serialize a DMMConfig to a sorted-key dict for the comparison artifact.
+
+    ``forecast_lookback`` is emitted only when set so configs that leave it at
+    the default ``None`` keep their historical ``comparison_id`` hash.
+    """
+    payload: dict[str, Any] = {
+        "annealing_epochs": int(dmm.annealing_epochs),
+        "beta1": float(dmm.beta1),
+        "beta2": float(dmm.beta2),
+        "clip_norm": float(dmm.clip_norm),
+        "emission_dim": int(dmm.emission_dim),
+        "learning_rate": float(dmm.learning_rate),
+        "lr_decay": float(dmm.lr_decay),
+        "min_annealing_factor": float(dmm.min_annealing_factor),
+        "min_scale": float(dmm.min_scale),
+        "mini_batch_size": int(dmm.mini_batch_size),
+        "num_epochs": int(dmm.num_epochs),
+        "num_layers": int(dmm.num_layers),
+        "obs_dim": int(dmm.obs_dim),
+        "rnn_dim": int(dmm.rnn_dim),
+        "rnn_dropout_rate": float(dmm.rnn_dropout_rate),
+        "seed": int(dmm.seed),
+        "side_info_dim": int(dmm.side_info_dim),
+        "transition_dim": int(dmm.transition_dim),
+        "weight_decay": float(dmm.weight_decay),
+        "z_dim": int(dmm.z_dim),
+    }
+    if dmm.forecast_lookback is not None:
+        payload["forecast_lookback"] = int(dmm.forecast_lookback)
+    return payload
+
+
 @dataclass(frozen=True)
 class SideInfoComparisonConfig:
     """Recipe for one Gate H side-information comparison run.
@@ -398,28 +431,7 @@ class SideInfoComparisonConfig:
             },
             "cost_bps_per_turnover": float(self.cost_bps_per_turnover),
             "data": self.data.to_dict(),
-            "dmm": {
-                "annealing_epochs": int(self.dmm.annealing_epochs),
-                "beta1": float(self.dmm.beta1),
-                "beta2": float(self.dmm.beta2),
-                "clip_norm": float(self.dmm.clip_norm),
-                "emission_dim": int(self.dmm.emission_dim),
-                "learning_rate": float(self.dmm.learning_rate),
-                "lr_decay": float(self.dmm.lr_decay),
-                "min_annealing_factor": float(self.dmm.min_annealing_factor),
-                "min_scale": float(self.dmm.min_scale),
-                "mini_batch_size": int(self.dmm.mini_batch_size),
-                "num_epochs": int(self.dmm.num_epochs),
-                "num_layers": int(self.dmm.num_layers),
-                "obs_dim": int(self.dmm.obs_dim),
-                "rnn_dim": int(self.dmm.rnn_dim),
-                "rnn_dropout_rate": float(self.dmm.rnn_dropout_rate),
-                "seed": int(self.dmm.seed),
-                "side_info_dim": int(self.dmm.side_info_dim),
-                "transition_dim": int(self.dmm.transition_dim),
-                "weight_decay": float(self.dmm.weight_decay),
-                "z_dim": int(self.dmm.z_dim),
-            },
+            "dmm": _dmm_to_payload(self.dmm),
             "eval_frequency": self.eval_frequency,
             "frequency": self.frequency,
             "notes": self.notes,
@@ -529,6 +541,11 @@ class SideInfoComparisonConfig:
             min_annealing_factor=float(dmm_raw.get("min_annealing_factor", 0.2)),
             annealing_epochs=int(dmm_raw.get("annealing_epochs", 1000)),
             seed=int(dmm_raw.get("seed", 54)),
+            forecast_lookback=(
+                int(dmm_raw["forecast_lookback"])
+                if dmm_raw.get("forecast_lookback") is not None
+                else None
+            ),
         )
         vr_raw = raw.get("vol_ratio", {})
         vol_ratio_cfg = VolatilityRatioConfig(
@@ -1820,6 +1837,7 @@ def _run_dmm_variant(
             fitted.model,
             effective_forecast,
             standardized_forecast_feature,
+            lookback=config.dmm.forecast_lookback,
         )
 
         signal_scale: float | None = None
@@ -1828,6 +1846,7 @@ def _run_dmm_variant(
                 fitted.model,
                 eval_train_returns_clean,
                 standardized_eval_train_feature,
+                lookback=config.dmm.forecast_lookback,
             )
             signal_scale = conviction_scale_from_train_predictions(train_expected.to_numpy())
 

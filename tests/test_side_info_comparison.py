@@ -939,10 +939,11 @@ def test_dmm_variant_uses_train_frequency_slice_and_eval_frequency_standardizati
             {"model": object(), "loss_history": (1.0, 0.5)},
         )()
 
-    def fake_expected_next_returns_from_dmm(model, returns_arg, side_info_arg):
+    def fake_expected_next_returns_from_dmm(model, returns_arg, side_info_arg, *, lookback=None):
         del model
         captured["forecast_returns"] = returns_arg.copy()
         captured["forecast_side_info"] = side_info_arg.copy()
+        captured["forecast_lookback"] = lookback
         return pd.Series(0.0, index=returns_arg.index, name="expected_next_returns")
 
     # _run_dmm_variant lazily imports fit_dmm/expected_next_returns_from_dmm from
