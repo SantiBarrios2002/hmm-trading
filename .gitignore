@@ -53,9 +53,12 @@ docs/*
 !docs/.gitkeep
 !docs/paper_spec.md
 !docs/results_vs_paper.md
+!docs/final_presentation_research_brief.md
 !docs/figures/
 docs/figures/*
 !docs/figures/cumulative_return_vs_paper.png
+!docs/figures/final_presentation/
+!docs/figures/final_presentation/*.png
 
 # Experiment artifacts
 runs/
@@ -69,3 +72,5 @@ runs/*
 !runs/508d122e9ab8/**
 !runs/e2b9f0a6b46a/
 !runs/e2b9f0a6b46a/**
+!runs/e72d8bda1a12/
+!runs/e72d8bda1a12/**
